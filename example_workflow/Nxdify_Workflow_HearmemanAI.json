@@ -1,0 +1,472 @@
+{
+  "id": "fe08b202-d3ef-4ee9-9b01-75d3f7632f71",
+  "revision": 0,
+  "last_node_id": 10,
+  "last_link_id": 9,
+  "nodes": [
+    {
+      "id": 4,
+      "type": "LoadImage",
+      "pos": [
+        417.23320312499925,
+        413.7171875
+      ],
+      "size": [
+        274.48164062499995,
+        326
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            2
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "title": "Reference Breasts Image",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.5.1",
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "milkers-too-large-not-to-get-sucked-v0-sankz3jcq68g1.webp",
+        "image"
+      ],
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
+    },
+    {
+      "id": 3,
+      "type": "LoadImage",
+      "pos": [
+        413.78515624999955,
+        47.59765625000007
+      ],
+      "size": [
+        282.798828125,
+        314
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            3
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "title": "Body & Face Image",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.5.1",
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "ComfyUI_00453_.png",
+        "image"
+      ],
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
+    },
+    {
+      "id": 2,
+      "type": "LoadImage",
+      "pos": [
+        -15.518359375000045,
+        49.898046875000006
+      ],
+      "size": [
+        282.798828125,
+        314
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            4
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "title": "Face Image",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.5.1",
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "ComfyUI_00452_.png",
+        "image"
+      ],
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
+    },
+    {
+      "id": 1,
+      "type": "NxdifyNode",
+      "pos": [
+        820.7452336861666,
+        438.1022243022
+      ],
+      "size": [
+        432.1643359374998,
+        196
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "face_image",
+          "type": "IMAGE",
+          "link": 4
+        },
+        {
+          "name": "body_image",
+          "type": "IMAGE",
+          "link": 3
+        },
+        {
+          "name": "breasts_image",
+          "type": "IMAGE",
+          "link": 2
+        },
+        {
+          "name": "dynamic_pose_image",
+          "type": "IMAGE",
+          "link": 1
+        },
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "prompt"
+          },
+          "link": 9
+        },
+        {
+          "name": "fal_api_key",
+          "type": "STRING",
+          "widget": {
+            "name": "fal_api_key"
+          },
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            6
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "NxdifyNode"
+      },
+      "widgets_values": [
+        "Your highest priority and a non negotiable: the final image should be a naturally lit replication of the fourth image, completely nude with subtle shadows of the person shown in the first and second images with the breasts shown in the third image and the exact pose/environment shown in the fourth image",
+        "",
+        "auto_4K"
+      ],
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 10,
+      "type": "PrimitiveStringMultiline",
+      "pos": [
+        849.9032838730244,
+        263.51453763200055
+      ],
+      "size": [
+        354.4291064049587,
+        138.17460937500005
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": [
+            9
+          ]
+        }
+      ],
+      "title": "Prompt",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.5.1",
+        "Node name for S&R": "PrimitiveStringMultiline"
+      },
+      "widgets_values": [
+        "Your highest priority and a non negotiable: the final image should be a naturally lit replication of the fourth image, completely nude with subtle shadows of the person shown in the first and second images with the breasts shown in the third image and the exact pose/environment shown in the fourth image"
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 5,
+      "type": "LoadImage",
+      "pos": [
+        -14.045703125000237,
+        422.29140624999934
+      ],
+      "size": [
+        282.798828125,
+        314.00000000000006
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            1
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "title": "Reference Pose Image",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.5.1",
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "ComfyUI_00335_.png",
+        "image"
+      ],
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
+    },
+    {
+      "id": 9,
+      "type": "MarkdownNote",
+      "pos": [
+        794.9104485400983,
+        -227.56799758588042
+      ],
+      "size": [
+        455.70394531249985,
+        265.90972656249994
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "# Nxdify Image Generation Node - Quick Guide\n\n## Overview\n\nGenerates image variations using FAL AI Seedream 4.5 with 4 reference images (Face, Body, Breasts, Dynamic Pose).\n\n## Prerequisites\n\n- **FAL AI API key** from https://fal.ai/dashboard\n\n## Inputs\n\n- **Face Image**: Reference for face features\n- **Body Image**: Reference for body shape\n- **Breasts Image**: Reference for breasts\n- **Dynamic Pose Image**: Determines Nxdified output pose\n- **Prompt**: Text description of desired output\n- **FAL API Key**: Your FAL AI API key (hidden input)\n- **Quality**: `auto_4K` (default) or `auto_2K`\n\n## Outputs\n\n- **Image**: Generated image in ComfyUI format\n\n## Usage\n\n1. Load 4 reference images into blue group\n2. Enter FAL API Key\n3. Run workflow\n\n## Tips\n\n- Use clear, well-lit reference images\n- Face image should be front-facing\n- Dynamic Pose image changes the output pose\n- First 3 images are cached after upload (faster on repeat)\n- Generation typically takes 40-60 seconds\n\n## Troubleshooting\n\n- **\"API key required\"**: Enter valid FAL API key\n- **\"Upload timeout\"**: Resize images smaller or check connection\n- **\"No images returned\"**: Check prompt or API credits\n- **Long wait times**: Normal (40-60s), check console logs with `[Nxdify]` prefix\n"
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 7,
+      "type": "SaveImage",
+      "pos": [
+        1314.4764685724604,
+        83.95258980638299
+      ],
+      "size": [
+        559.3175628372376,
+        580.6830774878763
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 6
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.5.1"
+      },
+      "widgets_values": [
+        "ComfyUI"
+      ]
+    },
+    {
+      "id": 8,
+      "type": "PrimitiveStringMultiline",
+      "pos": [
+        850.9629520618864,
+        130.97481156842042
+      ],
+      "size": [
+        349.4447314049587,
+        88
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": [
+            8
+          ]
+        }
+      ],
+      "title": "FAL API KEY",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.5.1",
+        "Node name for S&R": "PrimitiveStringMultiline"
+      },
+      "widgets_values": [
+        "YOUR FAL API KEY HERE"
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    }
+  ],
+  "links": [
+    [
+      1,
+      5,
+      0,
+      1,
+      3,
+      "IMAGE"
+    ],
+    [
+      2,
+      4,
+      0,
+      1,
+      2,
+      "IMAGE"
+    ],
+    [
+      3,
+      3,
+      0,
+      1,
+      1,
+      "IMAGE"
+    ],
+    [
+      4,
+      2,
+      0,
+      1,
+      0,
+      "IMAGE"
+    ],
+    [
+      6,
+      1,
+      0,
+      7,
+      0,
+      "IMAGE"
+    ],
+    [
+      8,
+      8,
+      0,
+      1,
+      5,
+      "STRING"
+    ],
+    [
+      9,
+      10,
+      0,
+      1,
+      4,
+      "STRING"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "Group",
+      "bounding": [
+        -57.43119990944748,
+        -36.913530388399536,
+        812.7273437499999,
+        816.1835937500001
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 2,
+      "title": "Nxdify",
+      "bounding": [
+        773.7038001084669,
+        56.21396886321784,
+        506.42460937500005,
+        643.539453125
+      ],
+      "color": "#b58b2a",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.6830134553650705,
+      "offset": [
+        945.5042355833434,
+        459.40626600114064
+      ]
+    },
+    "workflowRendererVersion": "LG",
+    "frontendVersion": "1.34.9"
+  },
+  "version": 0.4
+}
