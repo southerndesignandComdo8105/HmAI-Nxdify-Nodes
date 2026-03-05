@@ -16,39 +16,41 @@ import aiohttp
 
 class NxdifyNode:
     """
-    ComfyUI node for Nxdify image generation using FAL AI Seedream 4.5.
-    Takes 4 reference images (Face, Body, Breasts, Dynamic Pose) and generates variations.
+    ComfyUI node for Nxdify image generation using FAL AI Seedream.
+    Takes up to 4 reference images (Image1, Image2, Image3 optional, Image4 optional)
+    and generates variations.
+
     Returns a ComfyUI IMAGE batch (BHWC) whose batch size == number of outputs returned.
     """
 
     @classmethod
-def INPUT_TYPES(cls):
-    return {
-        "required": {
-            "face_image": ("IMAGE",),   # treat as Image 1
-            "body_image": ("IMAGE",),   # treat as Image 2
-            "prompt": ("STRING", {"multiline": True, "default": ""}),
-            "fal_api_key": ("STRING", {"default": "", "password": True}),
-            "quality": (
-                [
-                    "square_hd",
-                    "square",
-                    "portrait_4_3",
-                    "portrait_16_9",
-                    "landscape_4_3",
-                    "landscape_16_9",
-                    "auto_2K",
-                    "auto_3K",
-                ],
-                {"default": "auto_2K"},
-            ),
-            "num_images": ("INT", {"default": 4, "min": 1, "max": 8, "step": 1}),
-        },
-        "optional": {
-            "breasts_image": ("IMAGE",),        # Image 3 (optional)
-            "dynamic_pose_image": ("IMAGE",),   # Image 4 (optional)
-        },
-    }
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "face_image": ("IMAGE",),  # treat as Image 1
+                "body_image": ("IMAGE",),  # treat as Image 2
+                "prompt": ("STRING", {"multiline": True, "default": ""}),
+                "fal_api_key": ("STRING", {"default": "", "password": True}),
+                "quality": (
+                    [
+                        "square_hd",
+                        "square",
+                        "portrait_4_3",
+                        "portrait_16_9",
+                        "landscape_4_3",
+                        "landscape_16_9",
+                        "auto_2K",
+                        "auto_3K",
+                    ],
+                    {"default": "auto_2K"},
+                ),
+                "num_images": ("INT", {"default": 4, "min": 1, "max": 8, "step": 1}),
+            },
+            "optional": {
+                "breasts_image": ("IMAGE",),  # Image 3 (optional)
+                "dynamic_pose_image": ("IMAGE",),  # Image 4 (optional)
+            },
+        }
 
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image",)
@@ -284,176 +286,178 @@ def INPUT_TYPES(cls):
         return Image.open(io.BytesIO(b)).convert("RGB")
 
     async def generate_images_batch_tensor(
-    self,
-    image_urls: List[str],
-    prompt: str,
-    quality: str,
-    num_images: int,
-) -> torch.Tensor:
-    """Generate images using FAL Seedream v5 lite edit and return a ComfyUI IMAGE batch tensor BHWC."""
-    print(f"[Nxdify] Starting generation: image_size={quality}, num_images={num_images}, refs={len(image_urls)}")
+        self,
+        image_urls: List[str],
+        prompt: str,
+        quality: str,
+        num_images: int,
+    ) -> torch.Tensor:
+        """Generate images using FAL Seedream v5 lite edit and return a ComfyUI IMAGE batch tensor BHWC."""
+        print(f"[Nxdify] Starting generation: image_size={quality}, num_images={num_images}, refs={len(image_urls)}")
 
-    arguments = {
-        "prompt": prompt,
-        "image_size": quality,
-        "num_images": num_images,
-        "max_images": 1,  # keeps output count <= num_images
-        "enable_safety_checker": False,
-        "image_urls": image_urls,
-        # "sync_mode": False,  # optional; omit unless you want base64 data URIs
-    }
+        arguments = {
+            "prompt": prompt,
+            "image_size": quality,
+            "num_images": num_images,
+            "max_images": 1,  # keeps output count <= num_images
+            "enable_safety_checker": False,
+            "image_urls": image_urls,
+        }
 
-    result = await asyncio.to_thread(
-        self._subscribe_sync,
-        "fal-ai/bytedance/seedream/v5/lite/edit",
-        arguments,
-    )
-
-    if not result:
-        raise ValueError("No result returned from FAL API")
-
-    urls = self._extract_image_urls_from_result(result)
-    if not urls:
-        raise ValueError(f"No image URLs found in FAL result. Raw result keys: {list(result.keys()) if isinstance(result, dict) else type(result)}")
-
-    urls = urls[:num_images]
-    print(f"[Nxdify] FAL returned {len(urls)} image URL(s). Downloading...")
-
-    connector = aiohttp.TCPConnector(limit=self.MAX_CONCURRENT_DOWNLOADS)
-    async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = [self._download_one_image(session, url, i) for i, url in enumerate(urls)]
-        pil_images = await asyncio.gather(*tasks)
-
-    tensors = [self.pil_to_tensor(img) for img in pil_images]
-    batch = torch.cat(tensors, dim=0)
-
-    print(f"[Nxdify] Returning batch tensor: shape={tuple(batch.shape)}")
-    return batch
-
-    async def process_async(
-    self,
-    face_image: torch.Tensor,
-    body_image: torch.Tensor,
-    breasts_image: Optional[torch.Tensor],
-    dynamic_pose_image: Optional[torch.Tensor],
-    prompt: str,
-    fal_api_key: str,
-    quality: str,
-    num_images: int,
-) -> torch.Tensor:
-    process_start = time.time()
-    print(f"[Nxdify] ===== Starting process =====")
-
-    if not fal_api_key:
-        raise ValueError("FAL API key is required")
-    if not prompt:
-        raise ValueError("Prompt is required")
-
-    os.environ["FAL_KEY"] = fal_api_key
-    print("[Nxdify] FAL key configured")
-
-    # Build list of provided images in order: Image1, Image2, Image3?, Image4?
-    provided: List[Tuple[str, torch.Tensor, bool]] = [
-        ("img1", face_image, True),
-        ("img2", body_image, True),
-    ]
-    if breasts_image is not None:
-        provided.append(("img3", breasts_image, True))
-    if dynamic_pose_image is not None:
-        provided.append(("img4", dynamic_pose_image, False))  # pose not cached (your old behavior)
-
-    # Convert tensors to bytes
-    print("[Nxdify] Converting input tensors to bytes...")
-    byte_items: List[Tuple[str, bytes, bool]] = []
-    for label, tens, use_cache in provided:
-        b = self.tensor_to_bytes(tens)
-        byte_items.append((label, b, use_cache))
-
-    print("[Nxdify] Provided images:", ", ".join([f"{label}={len(b)}B" for label, b, _ in byte_items]))
-
-    # Upload only what exists
-    print("[Nxdify] Uploading reference images...")
-    upload_start = time.time()
-
-    image_urls: List[str] = []
-    for label, b, use_cache in byte_items:
-        url = await self.upload_ref_with_retry(b, use_cache=use_cache)
-        image_urls.append(url)
-        print(f"[Nxdify] Uploaded {label} -> {url[:70]}...")
-
-    print(f"[Nxdify] Uploads done in {time.time() - upload_start:.2f}s")
-
-    # Generate
-    generation_start = time.time()
-    batch = await self.generate_images_batch_tensor(
-        image_urls=image_urls,
-        prompt=prompt,
-        quality=quality,
-        num_images=num_images,
-    )
-    print(f"[Nxdify] Generation+download done in {time.time() - generation_start:.2f}s")
-    print(f"[Nxdify] ===== Total time: {time.time() - process_start:.2f}s =====")
-    return batch
-
-    def execute(
-    self,
-    face_image: torch.Tensor,
-    body_image: torch.Tensor,
-    prompt: str,
-    fal_api_key: str,
-    quality: str,
-    num_images: int,
-    breasts_image: Optional[torch.Tensor] = None,
-    dynamic_pose_image: Optional[torch.Tensor] = None,
-) -> Tuple[torch.Tensor]:
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(
-                    asyncio.run,
-                    self.process_async(
-                        face_image,
-                        body_image,
-                        breasts_image,
-                        dynamic_pose_image,
-                        prompt,
-                        fal_api_key,
-                        quality,
-                        num_images,
-                    ),
-                )
-                result = future.result()
-        else:
-            result = loop.run_until_complete(
-                self.process_async(
-                    face_image,
-                    body_image,
-                    breasts_image,
-                    dynamic_pose_image,
-                    prompt,
-                    fal_api_key,
-                    quality,
-                    num_images,
-                )
-            )
-    except RuntimeError:
-        result = asyncio.run(
-            self.process_async(
-                face_image,
-                body_image,
-                breasts_image,
-                dynamic_pose_image,
-                prompt,
-                fal_api_key,
-                quality,
-                num_images,
-            )
+        result = await asyncio.to_thread(
+            self._subscribe_sync,
+            "fal-ai/bytedance/seedream/v5/lite/edit",
+            arguments,
         )
 
-    return (result,)
+        if not result:
+            raise ValueError("No result returned from FAL API")
+
+        urls = self._extract_image_urls_from_result(result)
+        if not urls:
+            if isinstance(result, dict):
+                raise ValueError(f"No image URLs found in FAL result. Keys: {list(result.keys())}")
+            raise ValueError(f"No image URLs found in FAL result. Type: {type(result)}")
+
+        urls = urls[:num_images]
+        print(f"[Nxdify] FAL returned {len(urls)} image URL(s). Downloading...")
+
+        connector = aiohttp.TCPConnector(limit=self.MAX_CONCURRENT_DOWNLOADS)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            tasks = [self._download_one_image(session, url, i) for i, url in enumerate(urls)]
+            pil_images = await asyncio.gather(*tasks)
+
+        tensors = [self.pil_to_tensor(img) for img in pil_images]
+        batch = torch.cat(tensors, dim=0)
+
+        print(f"[Nxdify] Returning batch tensor: shape={tuple(batch.shape)}")
+        return batch
+
+    async def process_async(
+        self,
+        face_image: torch.Tensor,
+        body_image: torch.Tensor,
+        prompt: str,
+        fal_api_key: str,
+        quality: str,
+        num_images: int,
+        breasts_image: Optional[torch.Tensor] = None,
+        dynamic_pose_image: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        process_start = time.time()
+        print("[Nxdify] ===== Starting process =====")
+
+        if not fal_api_key:
+            raise ValueError("FAL API key is required")
+        if not prompt:
+            raise ValueError("Prompt is required")
+
+        os.environ["FAL_KEY"] = fal_api_key
+        print("[Nxdify] FAL key configured")
+
+        # Build list of provided images in order: Image1, Image2, Image3?, Image4?
+        provided: List[Tuple[str, torch.Tensor, bool]] = [
+            ("img1", face_image, True),
+            ("img2", body_image, True),
+        ]
+        if breasts_image is not None:
+            provided.append(("img3", breasts_image, True))
+        if dynamic_pose_image is not None:
+            # keep your old "pose not cached" behavior
+            provided.append(("img4", dynamic_pose_image, False))
+
+        # Convert tensors to bytes
+        print("[Nxdify] Converting input tensors to bytes...")
+        byte_items: List[Tuple[str, bytes, bool]] = []
+        for label, tens, use_cache in provided:
+            b = self.tensor_to_bytes(tens)
+            byte_items.append((label, b, use_cache))
+
+        print("[Nxdify] Provided images:", ", ".join([f"{label}={len(b)}B" for label, b, _ in byte_items]))
+
+        # Upload only what exists
+        print("[Nxdify] Uploading reference images...")
+        upload_start = time.time()
+
+        image_urls: List[str] = []
+        for label, b, use_cache in byte_items:
+            url = await self.upload_ref_with_retry(b, use_cache=use_cache)
+            image_urls.append(url)
+            print(f"[Nxdify] Uploaded {label} -> {url[:70]}...")
+
+        print(f"[Nxdify] Uploads done in {time.time() - upload_start:.2f}s")
+
+        # Generate
+        generation_start = time.time()
+        batch = await self.generate_images_batch_tensor(
+            image_urls=image_urls,
+            prompt=prompt,
+            quality=quality,
+            num_images=num_images,
+        )
+        print(f"[Nxdify] Generation+download done in {time.time() - generation_start:.2f}s")
+        print(f"[Nxdify] ===== Total time: {time.time() - process_start:.2f}s =====")
+        return batch
+
+    def execute(
+        self,
+        face_image: torch.Tensor,
+        body_image: torch.Tensor,
+        prompt: str,
+        fal_api_key: str,
+        quality: str,
+        num_images: int,
+        breasts_image: Optional[torch.Tensor] = None,
+        dynamic_pose_image: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor]:
+        """Synchronous wrapper for async processing."""
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(
+                        asyncio.run,
+                        self.process_async(
+                            face_image=face_image,
+                            body_image=body_image,
+                            prompt=prompt,
+                            fal_api_key=fal_api_key,
+                            quality=quality,
+                            num_images=num_images,
+                            breasts_image=breasts_image,
+                            dynamic_pose_image=dynamic_pose_image,
+                        ),
+                    )
+                    result = future.result()
+            else:
+                result = loop.run_until_complete(
+                    self.process_async(
+                        face_image=face_image,
+                        body_image=body_image,
+                        prompt=prompt,
+                        fal_api_key=fal_api_key,
+                        quality=quality,
+                        num_images=num_images,
+                        breasts_image=breasts_image,
+                        dynamic_pose_image=dynamic_pose_image,
+                    )
+                )
+        except RuntimeError:
+            result = asyncio.run(
+                self.process_async(
+                    face_image=face_image,
+                    body_image=body_image,
+                    prompt=prompt,
+                    fal_api_key=fal_api_key,
+                    quality=quality,
+                    num_images=num_images,
+                    breasts_image=breasts_image,
+                    dynamic_pose_image=dynamic_pose_image,
+                )
+            )
+
+        return (result,)
 
 
 NODE_CLASS_MAPPINGS = {"NxdifyNode": NxdifyNode}
 NODE_DISPLAY_NAME_MAPPINGS = {"NxdifyNode": "Nxdify Image Generation"}
-
