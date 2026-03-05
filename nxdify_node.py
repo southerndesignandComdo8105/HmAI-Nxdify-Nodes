@@ -5,7 +5,7 @@ import tempfile
 import hashlib
 import asyncio
 import concurrent.futures
-from typing import Tuple, Dict, List, Any
+from typing import Tuple, Dict, List, Optional, Any
 
 from PIL import Image
 import torch
@@ -16,13 +16,9 @@ import aiohttp
 
 class NxdifyNode:
     """
-    ComfyUI node for multi-reference image editing using FAL AI Nano Banana Pro (edit).
+    ComfyUI node for Nxdify image generation using FAL AI Seedream 4.5.
     Takes 4 reference images (Face, Body, Breasts, Dynamic Pose) and generates variations.
-
-    - Uploads reference images to FAL (returns hosted URLs)
-    - Calls: fal-ai/nano-banana-pro/edit
-    - Downloads ALL returned images
-    - Returns a ComfyUI IMAGE batch tensor (BHWC), batch size == num_images (or fewer if API returns fewer)
+    Returns a ComfyUI IMAGE batch (BHWC) whose batch size == number of outputs returned.
     """
 
     @classmethod
@@ -33,14 +29,11 @@ class NxdifyNode:
                 "body_image": ("IMAGE",),
                 "breasts_image": ("IMAGE",),
                 "dynamic_pose_image": ("IMAGE",),
-
                 "prompt": ("STRING", {"multiline": True, "default": ""}),
                 "fal_api_key": ("STRING", {"default": "", "password": True}),
+                "quality": (["auto_4K", "auto_2K"], {"default": "auto_4K"}),
 
-                # Nano Banana Pro uses resolution enums: 1K, 2K, 4K
-                "resolution": (["4K", "2K", "1K"], {"default": "4K"}),
-
-                # How many outputs you want back (batch size)
+                # Requested number of outputs back (batch size). You said you want 4.
                 "num_images": ("INT", {"default": 4, "min": 1, "max": 8, "step": 1}),
             }
         }
@@ -55,8 +48,6 @@ class NxdifyNode:
 
     # Class-level cache for uploaded reference image URLs (hash -> URL)
     _image_url_cache: Dict[str, str] = {}
-
-    # --------- Image helpers ---------
 
     def compress_image_bytes_max(self, image_bytes: bytes, max_bytes: int) -> bytes:
         """
@@ -101,7 +92,8 @@ class NxdifyNode:
         return image_bytes
 
     def tensor_to_bytes(self, tensor: torch.Tensor) -> bytes:
-        """Convert ComfyUI image tensor (BHWC) to JPEG bytes."""
+        """Convert ComfyUI image tensor to JPEG bytes."""
+        # ComfyUI IMAGE tensors are BHWC (batch, height, width, channels)
         if len(tensor.shape) == 4:
             img_array = tensor[0].detach().cpu().numpy()
         else:
@@ -138,8 +130,6 @@ class NxdifyNode:
 
         return torch.from_numpy(img_array)[None, ...]
 
-    # --------- Upload helpers ---------
-
     def _compute_image_hash(self, image_bytes: bytes) -> str:
         return hashlib.sha256(image_bytes).hexdigest()
 
@@ -148,7 +138,7 @@ class NxdifyNode:
         return fal.upload_file(tmp_path)
 
     async def upload_ref_with_retry(self, image_bytes: bytes, use_cache: bool = True, max_attempts: int = 3) -> str:
-        """Upload image with retry on timeouts. Optionally use cache to avoid re-uploading."""
+        """Upload image with retry on timeout. Optionally use cache to avoid re-uploading."""
         upload_start = time.time()
         original_size = len(image_bytes)
 
@@ -243,8 +233,6 @@ class NxdifyNode:
             except OSError:
                 pass
 
-    # --------- FAL call + download ---------
-
     def _subscribe_sync(self, endpoint: str, arguments: dict):
         """Subscribe to FAL API job synchronously (submit + polling internally)."""
         print(f"[Nxdify] Submitting job: {endpoint}")
@@ -255,11 +243,7 @@ class NxdifyNode:
         return result
 
     def _extract_image_urls_from_result(self, result: Any) -> List[str]:
-        """
-        FAL commonly returns {"images": [{"url": ...}, ...]}.
-        Some endpoints nest under {"output": {"images": ...}}.
-        This function handles both.
-        """
+        """Handle slightly different response structures and return list of URLs."""
         images = None
         if isinstance(result, dict):
             if "images" in result:
@@ -294,36 +278,28 @@ class NxdifyNode:
         breasts_url: str,
         dynamic_pose_url: str,
         prompt: str,
-        resolution: str,
+        quality: str,
         num_images: int,
     ) -> torch.Tensor:
-        """
-        Call Nano Banana Pro edit endpoint and return a ComfyUI IMAGE batch tensor BHWC.
-        """
-        print(f"[Nxdify] Starting Nano Banana Pro edit: resolution={resolution}, num_images={num_images}")
+        """Generate images using FAL Seedream 4.5 and return a ComfyUI IMAGE batch tensor BHWC."""
+        print(f"[Nxdify] Starting generation: quality={quality}, num_images={num_images}")
 
-        # Order matters — keep consistent with how you intend the model to interpret references.
         image_urls = [face_url, body_url, breasts_url, dynamic_pose_url]
 
-        # Nano Banana Pro edit schema-style arguments
-        # safety_tolerance: "6" (least strict / most permissive in enum 1–6)
+        # Per the docs: total outputs can be num_images * max_images.
+        # Keeping max_images=1 (as you stated) yields exactly num_images outputs, if the endpoint returns them.
         arguments = {
             "prompt": prompt,
-            "image_urls": image_urls,
+            "image_size": quality,
             "num_images": num_images,
-
-            # Optional-but-helpful defaults:
-            "aspect_ratio": "auto",
-            "output_format": "png",
-            "resolution": resolution,
-
-            # Your requested setting:
-            "safety_tolerance": "6",
+            "max_images": 1,
+            "enable_safety_checker": False,
+            "image_urls": image_urls,
         }
 
         result = await asyncio.to_thread(
             self._subscribe_sync,
-            "fal-ai/nano-banana-pro/edit",
+            "fal-ai/bytedance/seedream/v4.5/edit",
             arguments,
         )
 
@@ -334,10 +310,11 @@ class NxdifyNode:
         if not urls:
             raise ValueError("No image URLs found in FAL result")
 
-        # If API returns more than requested, cap it.
+        # Keep at most requested count (endpoint might return more in some modes)
         urls = urls[:num_images]
         print(f"[Nxdify] FAL returned {len(urls)} image URL(s). Downloading...")
 
+        # Download concurrently (bounded)
         connector = aiohttp.TCPConnector(limit=self.MAX_CONCURRENT_DOWNLOADS)
         async with aiohttp.ClientSession(connector=connector) as session:
             tasks = [self._download_one_image(session, url, i) for i, url in enumerate(urls)]
@@ -350,8 +327,6 @@ class NxdifyNode:
         print(f"[Nxdify] Returning batch tensor: shape={tuple(batch.shape)}")
         return batch
 
-    # --------- Main pipeline ---------
-
     async def process_async(
         self,
         face_image: torch.Tensor,
@@ -360,7 +335,7 @@ class NxdifyNode:
         dynamic_pose_image: torch.Tensor,
         prompt: str,
         fal_api_key: str,
-        resolution: str,
+        quality: str,
         num_images: int,
     ) -> torch.Tensor:
         process_start = time.time()
@@ -383,7 +358,7 @@ class NxdifyNode:
             f"breasts={len(breasts_bytes)} pose={len(dynamic_pose_bytes)}"
         )
 
-        # Configure FAL SDK auth
+        # Configure SDK
         os.environ["FAL_KEY"] = fal_api_key
         print(f"[Nxdify] FAL key configured")
 
@@ -391,12 +366,11 @@ class NxdifyNode:
         print(f"[Nxdify] Uploading reference images...")
         upload_start = time.time()
 
-        # Cache stable refs (identity/outfit/logo refs)
         face_url = await self.upload_ref_with_retry(face_bytes, use_cache=True)
         body_url = await self.upload_ref_with_retry(body_bytes, use_cache=True)
         breasts_url = await self.upload_ref_with_retry(breasts_bytes, use_cache=True)
 
-        # Pose changes often; don't cache
+        # dynamic pose not cached
         dynamic_pose_url = await self.upload_ref_with_retry(dynamic_pose_bytes, use_cache=False)
 
         upload_elapsed = time.time() - upload_start
@@ -410,7 +384,7 @@ class NxdifyNode:
             breasts_url=breasts_url,
             dynamic_pose_url=dynamic_pose_url,
             prompt=prompt,
-            resolution=resolution,
+            quality=quality,
             num_images=num_images,
         )
         generation_elapsed = time.time() - generation_start
@@ -428,7 +402,7 @@ class NxdifyNode:
         dynamic_pose_image: torch.Tensor,
         prompt: str,
         fal_api_key: str,
-        resolution: str,
+        quality: str,
         num_images: int,
     ) -> Tuple[torch.Tensor]:
         """Synchronous wrapper for async processing."""
@@ -445,7 +419,7 @@ class NxdifyNode:
                             dynamic_pose_image,
                             prompt,
                             fal_api_key,
-                            resolution,
+                            quality,
                             num_images,
                         ),
                     )
@@ -459,7 +433,7 @@ class NxdifyNode:
                         dynamic_pose_image,
                         prompt,
                         fal_api_key,
-                        resolution,
+                        quality,
                         num_images,
                     )
                 )
@@ -472,7 +446,7 @@ class NxdifyNode:
                     dynamic_pose_image,
                     prompt,
                     fal_api_key,
-                    resolution,
+                    quality,
                     num_images,
                 )
             )
@@ -481,5 +455,5 @@ class NxdifyNode:
 
 
 NODE_CLASS_MAPPINGS = {"NxdifyNode": NxdifyNode}
-NODE_DISPLAY_NAME_MAPPINGS = {"NxdifyNode": "Nxdify Image Generation (Nano Banana Pro Edit)"}
+NODE_DISPLAY_NAME_MAPPINGS = {"NxdifyNode": "Nxdify Image Generation"}
 
