@@ -17,7 +17,7 @@ import aiohttp
 class NxdifyNode:
     """
     ComfyUI node for Nxdify image generation using FAL AI Seedream.
-    Takes up to 4 reference images (Image1, Image2, Image3 optional, Image4 optional)
+    Takes up to 4 reference images (Image1, Image2 required; Image3 optional; Image4 optional)
     and generates variations.
 
     Returns a ComfyUI IMAGE batch (BHWC) whose batch size == number of outputs returned.
@@ -31,6 +31,11 @@ class NxdifyNode:
                 "body_image": ("IMAGE",),  # treat as Image 2
                 "prompt": ("STRING", {"multiline": True, "default": ""}),
                 "fal_api_key": ("STRING", {"default": "", "password": True}),
+
+                # Choose which Seedream endpoint to call
+                "seedream_version": (["v5_lite", "v4.5"], {"default": "v5_lite"}),
+
+                # One unified dropdown (union); we validate at runtime based on seedream_version
                 "quality": (
                     [
                         "square_hd",
@@ -40,14 +45,16 @@ class NxdifyNode:
                         "landscape_4_3",
                         "landscape_16_9",
                         "auto_2K",
-                        "auto_3K",
+                        "auto_3K",  # v5
+                        "auto_4K",  # v4.5
                     ],
                     {"default": "auto_2K"},
                 ),
+
                 "num_images": ("INT", {"default": 4, "min": 1, "max": 8, "step": 1}),
             },
             "optional": {
-                "breasts_image": ("IMAGE",),  # Image 3 (optional)
+                "breasts_image": ("IMAGE",),       # Image 3 (optional)
                 "dynamic_pose_image": ("IMAGE",),  # Image 4 (optional)
             },
         }
@@ -63,6 +70,47 @@ class NxdifyNode:
     # Class-level cache for uploaded reference image URLs (hash -> URL)
     _image_url_cache: Dict[str, str] = {}
 
+    # -------------------------
+    # Helpers: validation/config
+    # -------------------------
+    def _get_endpoint(self, seedream_version: str) -> str:
+        if seedream_version == "v4.5":
+            return "fal-ai/bytedance/seedream/v4.5/edit"
+        # default v5 lite
+        return "fal-ai/bytedance/seedream/v5/lite/edit"
+
+    def _validate_quality(self, seedream_version: str, quality: str) -> None:
+        allowed_v45 = {
+            "square_hd",
+            "square",
+            "portrait_4_3",
+            "portrait_16_9",
+            "landscape_4_3",
+            "landscape_16_9",
+            "auto_2K",
+            "auto_4K",
+        }
+        allowed_v5 = {
+            "square_hd",
+            "square",
+            "portrait_4_3",
+            "portrait_16_9",
+            "landscape_4_3",
+            "landscape_16_9",
+            "auto_2K",
+            "auto_3K",
+        }
+
+        allowed = allowed_v45 if seedream_version == "v4.5" else allowed_v5
+        if quality not in allowed:
+            raise ValueError(
+                f"Quality '{quality}' is not valid for Seedream {seedream_version}. "
+                f"Allowed: {sorted(allowed)}"
+            )
+
+    # -------------------------
+    # Image conversion utilities
+    # -------------------------
     def compress_image_bytes_max(self, image_bytes: bytes, max_bytes: int) -> bytes:
         """
         Compress image to fit under max_bytes.
@@ -147,6 +195,9 @@ class NxdifyNode:
     def _compute_image_hash(self, image_bytes: bytes) -> str:
         return hashlib.sha256(image_bytes).hexdigest()
 
+    # -------------------------
+    # FAL upload / subscribe
+    # -------------------------
     def _upload_file_sync(self, tmp_path: str) -> Any:
         """Synchronous wrapper for fal.upload_file(path)."""
         return fal.upload_file(tmp_path)
@@ -285,15 +336,25 @@ class NxdifyNode:
             b = await resp.read()
         return Image.open(io.BytesIO(b)).convert("RGB")
 
+    # -------------------------
+    # Generation
+    # -------------------------
     async def generate_images_batch_tensor(
         self,
+        seedream_version: str,
         image_urls: List[str],
         prompt: str,
         quality: str,
         num_images: int,
     ) -> torch.Tensor:
-        """Generate images using FAL Seedream v5 lite edit and return a ComfyUI IMAGE batch tensor BHWC."""
-        print(f"[Nxdify] Starting generation: image_size={quality}, num_images={num_images}, refs={len(image_urls)}")
+        """Generate images using selected Seedream endpoint and return a ComfyUI IMAGE batch tensor BHWC."""
+        self._validate_quality(seedream_version, quality)
+
+        endpoint = self._get_endpoint(seedream_version)
+        print(
+            f"[Nxdify] Starting generation: model={seedream_version}, endpoint={endpoint}, "
+            f"image_size={quality}, num_images={num_images}, refs={len(image_urls)}"
+        )
 
         arguments = {
             "prompt": prompt,
@@ -304,11 +365,7 @@ class NxdifyNode:
             "image_urls": image_urls,
         }
 
-        result = await asyncio.to_thread(
-            self._subscribe_sync,
-            "fal-ai/bytedance/seedream/v5/lite/edit",
-            arguments,
-        )
+        result = await asyncio.to_thread(self._subscribe_sync, endpoint, arguments)
 
         if not result:
             raise ValueError("No result returned from FAL API")
@@ -339,6 +396,7 @@ class NxdifyNode:
         body_image: torch.Tensor,
         prompt: str,
         fal_api_key: str,
+        seedream_version: str,
         quality: str,
         num_images: int,
         breasts_image: Optional[torch.Tensor] = None,
@@ -390,6 +448,7 @@ class NxdifyNode:
         # Generate
         generation_start = time.time()
         batch = await self.generate_images_batch_tensor(
+            seedream_version=seedream_version,
             image_urls=image_urls,
             prompt=prompt,
             quality=quality,
@@ -405,6 +464,7 @@ class NxdifyNode:
         body_image: torch.Tensor,
         prompt: str,
         fal_api_key: str,
+        seedream_version: str,
         quality: str,
         num_images: int,
         breasts_image: Optional[torch.Tensor] = None,
@@ -422,6 +482,7 @@ class NxdifyNode:
                             body_image=body_image,
                             prompt=prompt,
                             fal_api_key=fal_api_key,
+                            seedream_version=seedream_version,
                             quality=quality,
                             num_images=num_images,
                             breasts_image=breasts_image,
@@ -436,6 +497,7 @@ class NxdifyNode:
                         body_image=body_image,
                         prompt=prompt,
                         fal_api_key=fal_api_key,
+                        seedream_version=seedream_version,
                         quality=quality,
                         num_images=num_images,
                         breasts_image=breasts_image,
@@ -449,6 +511,7 @@ class NxdifyNode:
                     body_image=body_image,
                     prompt=prompt,
                     fal_api_key=fal_api_key,
+                    seedream_version=seedream_version,
                     quality=quality,
                     num_images=num_images,
                     breasts_image=breasts_image,
