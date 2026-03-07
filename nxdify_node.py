@@ -82,8 +82,15 @@ class NxdifyNode:
 
     @classmethod
     def INPUT_TYPES(cls):
+        # Important: keep prompt / fal_api_key / quality early for older workflow compatibility
         return {
             "required": {
+                "face_image": ("IMAGE",),
+                "body_image": ("IMAGE",),
+                "prompt": ("STRING", {"multiline": True, "default": ""}),
+                "fal_api_key": ("STRING", {"default": "", "password": True}),
+                "quality": (cls.SEEDREAM_IMAGE_SIZES, {"default": "auto_4K"}),
+
                 "model": (
                     [
                         "seedream_v4_5",
@@ -91,16 +98,9 @@ class NxdifyNode:
                         "nano_banana_pro",
                         "qwen_image_2_pro_edit",
                     ],
-                    {"default": "seedream_v5_lite"},
+                    {"default": "seedream_v4_5"},
                 ),
-                "face_image": ("IMAGE",),
-                "body_image": ("IMAGE",),
-                "prompt": ("STRING", {"multiline": True, "default": ""}),
-                "fal_api_key": ("STRING", {"default": "", "password": True}),
                 "num_images": ("INT", {"default": 4, "min": 1, "max": 8, "step": 1}),
-
-                # Seedream
-                "quality": (cls.SEEDREAM_IMAGE_SIZES, {"default": "auto_2K"}),
 
                 # Nano Banana Pro
                 "nano_resolution": (cls.NANO_RESOLUTIONS, {"default": "1K"}),
@@ -141,7 +141,6 @@ class NxdifyNode:
         for _ in range(20):
             w = max(1, int(base_w * scale))
             h = max(1, int(base_h * scale))
-
             working = img if (w == base_w and h == base_h) else img.resize((w, h), Image.Resampling.LANCZOS)
 
             buf = io.BytesIO()
@@ -403,13 +402,13 @@ class NxdifyNode:
 
     async def process_async(
         self,
-        model: str,
         face_image: torch.Tensor,
         body_image: torch.Tensor,
         prompt: str,
         fal_api_key: str,
-        num_images: int,
         quality: str,
+        model: str,
+        num_images: int,
         nano_resolution: str,
         nano_aspect_ratio: str,
         nano_output_format: str,
@@ -422,11 +421,13 @@ class NxdifyNode:
         start = time.time()
         print("[Nxdify] ===== Starting process =====")
 
-        if not fal_api_key:
+        if not fal_api_key or not fal_api_key.strip():
             raise ValueError("FAL API key is required")
+
         if not prompt:
             raise ValueError("Prompt is required")
 
+        print(f"[Nxdify] API key present: {bool(fal_api_key)} length={len(fal_api_key) if fal_api_key else 0}")
         os.environ["FAL_KEY"] = fal_api_key
         print("[Nxdify] FAL key configured")
 
@@ -473,13 +474,13 @@ class NxdifyNode:
 
     def execute(
         self,
-        model: str,
         face_image: torch.Tensor,
         body_image: torch.Tensor,
         prompt: str,
         fal_api_key: str,
-        num_images: int,
         quality: str,
+        model: str,
+        num_images: int,
         nano_resolution: str,
         nano_aspect_ratio: str,
         nano_output_format: str,
@@ -496,62 +497,62 @@ class NxdifyNode:
                     future = executor.submit(
                         asyncio.run,
                         self.process_async(
-                            model=model,
                             face_image=face_image,
                             body_image=body_image,
-                            breasts_image=breasts_image,
-                            dynamic_pose_image=dynamic_pose_image,
                             prompt=prompt,
                             fal_api_key=fal_api_key,
-                            num_images=num_images,
                             quality=quality,
+                            model=model,
+                            num_images=num_images,
                             nano_resolution=nano_resolution,
                             nano_aspect_ratio=nano_aspect_ratio,
                             nano_output_format=nano_output_format,
                             qwen_image_size=qwen_image_size,
                             qwen_use_exact_2048=qwen_use_exact_2048,
                             qwen_output_format=qwen_output_format,
+                            breasts_image=breasts_image,
+                            dynamic_pose_image=dynamic_pose_image,
                         ),
                     )
                     result = future.result()
             else:
                 result = loop.run_until_complete(
                     self.process_async(
-                        model=model,
                         face_image=face_image,
                         body_image=body_image,
-                        breasts_image=breasts_image,
-                        dynamic_pose_image=dynamic_pose_image,
                         prompt=prompt,
                         fal_api_key=fal_api_key,
-                        num_images=num_images,
                         quality=quality,
+                        model=model,
+                        num_images=num_images,
                         nano_resolution=nano_resolution,
                         nano_aspect_ratio=nano_aspect_ratio,
                         nano_output_format=nano_output_format,
                         qwen_image_size=qwen_image_size,
                         qwen_use_exact_2048=qwen_use_exact_2048,
                         qwen_output_format=qwen_output_format,
+                        breasts_image=breasts_image,
+                        dynamic_pose_image=dynamic_pose_image,
                     )
                 )
         except RuntimeError:
             result = asyncio.run(
                 self.process_async(
-                    model=model,
                     face_image=face_image,
                     body_image=body_image,
-                    breasts_image=breasts_image,
-                    dynamic_pose_image=dynamic_pose_image,
                     prompt=prompt,
                     fal_api_key=fal_api_key,
-                    num_images=num_images,
                     quality=quality,
+                    model=model,
+                    num_images=num_images,
                     nano_resolution=nano_resolution,
                     nano_aspect_ratio=nano_aspect_ratio,
                     nano_output_format=nano_output_format,
                     qwen_image_size=qwen_image_size,
                     qwen_use_exact_2048=qwen_use_exact_2048,
                     qwen_output_format=qwen_output_format,
+                    breasts_image=breasts_image,
+                    dynamic_pose_image=dynamic_pose_image,
                 )
             )
 
