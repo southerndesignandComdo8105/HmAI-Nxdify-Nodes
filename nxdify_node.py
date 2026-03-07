@@ -16,46 +16,105 @@ import aiohttp
 
 class NxdifyNode:
     """
-    ComfyUI node for Nxdify image generation using FAL AI Seedream.
-    Takes up to 4 reference images (Image1, Image2 required; Image3 optional; Image4 optional)
-    and generates variations.
+    ComfyUI node for multi-image edit using FAL endpoints.
 
-    Returns a ComfyUI IMAGE batch (BHWC) whose batch size == number of outputs returned.
+    Supports:
+      - Seedream 4.5 Edit
+      - Seedream 5.0 Lite Edit
+      - Nano Banana Pro Edit
+      - Qwen Image 2 Pro Edit
+
+    Uses up to 4 image inputs in ComfyUI, but individual endpoints may enforce stricter limits.
+    Returns a ComfyUI IMAGE batch (BHWC).
     """
+
+    ENDPOINT_SEEDREAM_45 = "fal-ai/bytedance/seedream/v4.5/edit"
+    ENDPOINT_SEEDREAM_5 = "fal-ai/bytedance/seedream/v5/lite/edit"
+    ENDPOINT_NANO_BANANA_PRO = "fal-ai/nano-banana-pro/edit"
+    ENDPOINT_QWEN_IMAGE_2_PRO_EDIT = "fal-ai/qwen-image-2/pro/edit"
+
+    SEEDREAM_IMAGE_SIZES = [
+        "square_hd",
+        "square",
+        "portrait_4_3",
+        "portrait_16_9",
+        "landscape_4_3",
+        "landscape_16_9",
+        "auto_2K",
+        "auto_3K",
+        "auto_4K",
+    ]
+
+    SEEDREAM_45_VALID = {
+        "square_hd",
+        "square",
+        "portrait_4_3",
+        "portrait_16_9",
+        "landscape_4_3",
+        "landscape_16_9",
+        "auto_2K",
+        "auto_4K",
+    }
+
+    SEEDREAM_5_VALID = {
+        "square_hd",
+        "square",
+        "portrait_4_3",
+        "portrait_16_9",
+        "landscape_4_3",
+        "landscape_16_9",
+        "auto_2K",
+        "auto_3K",
+    }
+
+    QWEN_IMAGE_SIZES = [
+        "square_hd",
+        "square",
+        "portrait_4_3",
+        "portrait_16_9",
+        "landscape_4_3",
+        "landscape_16_9",
+    ]
+
+    NANO_RESOLUTIONS = ["1K", "2K", "4K"]
+    NANO_ASPECT_RATIOS = ["auto", "21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16"]
+    NANO_OUTPUT_FORMATS = ["png", "jpeg", "webp"]
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "face_image": ("IMAGE",),  # treat as Image 1
-                "body_image": ("IMAGE",),  # treat as Image 2
+                "model": (
+                    [
+                        "seedream_v4_5",
+                        "seedream_v5_lite",
+                        "nano_banana_pro",
+                        "qwen_image_2_pro_edit",
+                    ],
+                    {"default": "seedream_v5_lite"},
+                ),
+                "face_image": ("IMAGE",),
+                "body_image": ("IMAGE",),
                 "prompt": ("STRING", {"multiline": True, "default": ""}),
                 "fal_api_key": ("STRING", {"default": "", "password": True}),
-
-                # Choose which Seedream endpoint to call
-                "seedream_version": (["v5_lite", "v4.5"], {"default": "v5_lite"}),
-
-                # One unified dropdown (union); we validate at runtime based on seedream_version
-                "quality": (
-                    [
-                        "square_hd",
-                        "square",
-                        "portrait_4_3",
-                        "portrait_16_9",
-                        "landscape_4_3",
-                        "landscape_16_9",
-                        "auto_2K",
-                        "auto_3K",  # v5
-                        "auto_4K",  # v4.5
-                    ],
-                    {"default": "auto_2K"},
-                ),
-
                 "num_images": ("INT", {"default": 4, "min": 1, "max": 8, "step": 1}),
+
+                # Seedream
+                "quality": (cls.SEEDREAM_IMAGE_SIZES, {"default": "auto_2K"}),
+
+                # Nano Banana Pro
+                "nano_resolution": (cls.NANO_RESOLUTIONS, {"default": "1K"}),
+                "nano_aspect_ratio": (cls.NANO_ASPECT_RATIOS, {"default": "auto"}),
+                "nano_output_format": (cls.NANO_OUTPUT_FORMATS, {"default": "png"}),
+
+                # Qwen
+                "qwen_image_size": (cls.QWEN_IMAGE_SIZES, {"default": "square_hd"}),
+                "qwen_use_exact_2048": ("BOOLEAN", {"default": True}),
+                "qwen_output_format": (["png", "jpeg", "webp"], {"default": "png"}),
             },
             "optional": {
-                "breasts_image": ("IMAGE",),       # Image 3 (optional)
-                "dynamic_pose_image": ("IMAGE",),  # Image 4 (optional)
+                "breasts_image": ("IMAGE",),
+                "dynamic_pose_image": ("IMAGE",),
             },
         }
 
@@ -67,57 +126,9 @@ class NxdifyNode:
     MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5MB
     MAX_CONCURRENT_DOWNLOADS = 8
 
-    # Class-level cache for uploaded reference image URLs (hash -> URL)
     _image_url_cache: Dict[str, str] = {}
 
-    # -------------------------
-    # Helpers: validation/config
-    # -------------------------
-    def _get_endpoint(self, seedream_version: str) -> str:
-        if seedream_version == "v4.5":
-            return "fal-ai/bytedance/seedream/v4.5/edit"
-        # default v5 lite
-        return "fal-ai/bytedance/seedream/v5/lite/edit"
-
-    def _validate_quality(self, seedream_version: str, quality: str) -> None:
-        allowed_v45 = {
-            "square_hd",
-            "square",
-            "portrait_4_3",
-            "portrait_16_9",
-            "landscape_4_3",
-            "landscape_16_9",
-            "auto_2K",
-            "auto_4K",
-        }
-        allowed_v5 = {
-            "square_hd",
-            "square",
-            "portrait_4_3",
-            "portrait_16_9",
-            "landscape_4_3",
-            "landscape_16_9",
-            "auto_2K",
-            "auto_3K",
-        }
-
-        allowed = allowed_v45 if seedream_version == "v4.5" else allowed_v5
-        if quality not in allowed:
-            raise ValueError(
-                f"Quality '{quality}' is not valid for Seedream {seedream_version}. "
-                f"Allowed: {sorted(allowed)}"
-            )
-
-    # -------------------------
-    # Image conversion utilities
-    # -------------------------
     def compress_image_bytes_max(self, image_bytes: bytes, max_bytes: int) -> bytes:
-        """
-        Compress image to fit under max_bytes.
-        Strategy:
-        1) Reduce JPEG quality (92 down to 52)
-        2) If still too large, downscale (100% down to ~45%)
-        """
         if len(image_bytes) <= max_bytes:
             return image_bytes
 
@@ -145,7 +156,7 @@ class NxdifyNode:
                 continue
 
             if scale > 0.45:
-                scale = scale * 0.85
+                scale *= 0.85
                 quality = 92
                 continue
 
@@ -154,8 +165,6 @@ class NxdifyNode:
         return image_bytes
 
     def tensor_to_bytes(self, tensor: torch.Tensor) -> bytes:
-        """Convert ComfyUI image tensor to JPEG bytes."""
-        # ComfyUI IMAGE tensors are BHWC (batch, height, width, channels)
         if len(tensor.shape) == 4:
             img_array = tensor[0].detach().cpu().numpy()
         else:
@@ -163,7 +172,6 @@ class NxdifyNode:
 
         img_array = (np.clip(img_array, 0.0, 1.0) * 255.0).astype(np.uint8)
 
-        # Handle alpha / grayscale
         if img_array.shape[2] == 4:
             alpha = img_array[:, :, 3:4].astype(np.float32) / 255.0
             rgb = img_array[:, :, :3].astype(np.float32)
@@ -180,34 +188,24 @@ class NxdifyNode:
         return buf.getvalue()
 
     def pil_to_tensor(self, img: Image.Image) -> torch.Tensor:
-        """Convert PIL Image to ComfyUI tensor format (BHWC) with batch dimension = 1."""
         if img.mode != "RGB":
             img = img.convert("RGB")
-
         img_array = np.array(img).astype(np.float32) / 255.0
-
         if len(img_array.shape) == 2:
             img_array = np.expand_dims(img_array, axis=2)
             img_array = np.repeat(img_array, 3, axis=2)
-
         return torch.from_numpy(img_array)[None, ...]
 
     def _compute_image_hash(self, image_bytes: bytes) -> str:
         return hashlib.sha256(image_bytes).hexdigest()
 
-    # -------------------------
-    # FAL upload / subscribe
-    # -------------------------
     def _upload_file_sync(self, tmp_path: str) -> Any:
-        """Synchronous wrapper for fal.upload_file(path)."""
         return fal.upload_file(tmp_path)
 
     async def upload_ref_with_retry(self, image_bytes: bytes, use_cache: bool = True, max_attempts: int = 3) -> str:
-        """Upload image with retry on timeout. Optionally use cache to avoid re-uploading."""
         upload_start = time.time()
         original_size = len(image_bytes)
 
-        # Cache check
         image_hash = None
         if use_cache:
             image_hash = self._compute_image_hash(image_bytes)
@@ -215,28 +213,19 @@ class NxdifyNode:
                 print(f"[Nxdify] Cache hit (hash: {image_hash[:16]}...), skipping upload")
                 return self._image_url_cache[image_hash]
 
-        # Compress first
         print(f"[Nxdify] Compressing image (original: {original_size} bytes)...")
         compressed = self.compress_image_bytes_max(image_bytes, self.MAX_IMAGE_SIZE)
-        compression_ratio = (1 - len(compressed) / original_size) * 100 if original_size > 0 else 0.0
-        print(f"[Nxdify] Compressed to {len(compressed)} bytes ({compression_ratio:.1f}% reduction)")
+        print(f"[Nxdify] Compressed to {len(compressed)} bytes")
 
-        # Temp file
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
             tmp.write(compressed)
             tmp_path = tmp.name
 
-        timeout_errors: List[str] = []
         try:
             for attempt in range(max_attempts):
                 try:
                     print(f"[Nxdify] Uploading image (attempt {attempt + 1}/{max_attempts})...")
-                    attempt_start = time.time()
-
                     result = await asyncio.to_thread(self._upload_file_sync, tmp_path)
-
-                    attempt_elapsed = time.time() - attempt_start
-                    print(f"[Nxdify] Upload completed in {attempt_elapsed:.2f}s")
 
                     if isinstance(result, dict) and "url" in result:
                         url = result["url"]
@@ -250,48 +239,19 @@ class NxdifyNode:
                             image_hash = self._compute_image_hash(image_bytes)
                         self._image_url_cache[image_hash] = url
 
-                    total_upload_time = time.time() - upload_start
-                    print(f"[Nxdify] Upload successful (total: {total_upload_time:.2f}s)")
+                    print(f"[Nxdify] Upload successful in {time.time() - upload_start:.2f}s")
                     return url
 
                 except Exception as e:
-                    error_str = str(e)
-                    error_lower = error_str.lower()
-
-                    is_408_timeout = (
-                        "408" in error_str
-                        or "request timeout" in error_lower
-                        or "http/1.1 408" in error_lower
-                        or "http 408" in error_lower
-                    )
-                    is_timeout = (
-                        is_408_timeout
-                        or "timeout" in error_lower
-                        or isinstance(e, (TimeoutError, asyncio.TimeoutError))
-                    )
-
-                    if is_408_timeout:
-                        timeout_errors.append(f"Attempt {attempt + 1}: HTTP 408 Request Timeout")
-
                     if attempt == max_attempts - 1:
-                        if timeout_errors:
-                            print(f"[Nxdify] Upload failed after {max_attempts} attempts")
-                            raise RuntimeError(
-                                f"Upload timed out after {max_attempts} attempts with HTTP 408 errors. "
-                                f"Try resizing the image smaller. Errors: {'; '.join(timeout_errors)}"
-                            )
-                        print(f"[Nxdify] Upload failed on final attempt: {e}")
                         raise
-
-                    if is_timeout:
-                        backoff = 2 + attempt * 3  # 2s, 5s, 8s
-                        print(f"[Nxdify] Upload timeout (attempt {attempt + 1}): {error_str[:120]}... retry in {backoff}s")
+                    err = str(e).lower()
+                    if "timeout" in err or "408" in err:
+                        backoff = 2 + attempt * 3
+                        print(f"[Nxdify] Upload timeout; retry in {backoff}s")
                         await asyncio.sleep(backoff)
                         continue
-
-                    print(f"[Nxdify] Upload failed with non-timeout error: {error_str[:200]}")
                     raise
-
         finally:
             try:
                 os.unlink(tmp_path)
@@ -299,16 +259,13 @@ class NxdifyNode:
                 pass
 
     def _subscribe_sync(self, endpoint: str, arguments: dict):
-        """Subscribe to FAL API job synchronously (submit + polling internally)."""
         print(f"[Nxdify] Submitting job: {endpoint}")
         start = time.time()
         result = fal.subscribe(endpoint, arguments=arguments, with_logs=False)
-        elapsed = time.time() - start
-        print(f"[Nxdify] FAL job completed in {elapsed:.2f}s")
+        print(f"[Nxdify] FAL job completed in {time.time() - start:.2f}s")
         return result
 
     def _extract_image_urls_from_result(self, result: Any) -> List[str]:
-        """Handle slightly different response structures and return list of URLs."""
         images = None
         if isinstance(result, dict):
             if "images" in result:
@@ -336,35 +293,96 @@ class NxdifyNode:
             b = await resp.read()
         return Image.open(io.BytesIO(b)).convert("RGB")
 
-    # -------------------------
-    # Generation
-    # -------------------------
+    def _validate_seedream_quality(self, model: str, quality: str) -> None:
+        if model == "seedream_v4_5" and quality not in self.SEEDREAM_45_VALID:
+            raise ValueError(f"Quality '{quality}' is not valid for Seedream 4.5.")
+        if model == "seedream_v5_lite" and quality not in self.SEEDREAM_5_VALID:
+            raise ValueError(f"Quality '{quality}' is not valid for Seedream 5.0 Lite.")
+
+    def _build_qwen_image_size(self, qwen_image_size: str, qwen_use_exact_2048: bool) -> Any:
+        if qwen_use_exact_2048:
+            return {"width": 2048, "height": 2048}
+        return qwen_image_size
+
+    async def _download_batch(self, urls: List[str]) -> torch.Tensor:
+        connector = aiohttp.TCPConnector(limit=self.MAX_CONCURRENT_DOWNLOADS)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            tasks = [self._download_one_image(session, url, i) for i, url in enumerate(urls)]
+            pil_images = await asyncio.gather(*tasks)
+
+        tensors = [self.pil_to_tensor(img) for img in pil_images]
+        return torch.cat(tensors, dim=0)
+
     async def generate_images_batch_tensor(
         self,
-        seedream_version: str,
+        model: str,
         image_urls: List[str],
         prompt: str,
-        quality: str,
         num_images: int,
+        quality: str,
+        nano_resolution: str,
+        nano_aspect_ratio: str,
+        nano_output_format: str,
+        qwen_image_size: str,
+        qwen_use_exact_2048: bool,
+        qwen_output_format: str,
     ) -> torch.Tensor:
-        """Generate images using selected Seedream endpoint and return a ComfyUI IMAGE batch tensor BHWC."""
-        self._validate_quality(seedream_version, quality)
+        if model == "seedream_v4_5":
+            self._validate_seedream_quality(model, quality)
+            endpoint = self.ENDPOINT_SEEDREAM_45
+            arguments = {
+                "prompt": prompt,
+                "image_size": quality,
+                "num_images": num_images,
+                "max_images": 1,
+                "enable_safety_checker": False,
+                "image_urls": image_urls,
+            }
 
-        endpoint = self._get_endpoint(seedream_version)
-        print(
-            f"[Nxdify] Starting generation: model={seedream_version}, endpoint={endpoint}, "
-            f"image_size={quality}, num_images={num_images}, refs={len(image_urls)}"
-        )
+        elif model == "seedream_v5_lite":
+            self._validate_seedream_quality(model, quality)
+            endpoint = self.ENDPOINT_SEEDREAM_5
+            arguments = {
+                "prompt": prompt,
+                "image_size": quality,
+                "num_images": num_images,
+                "max_images": 1,
+                "enable_safety_checker": False,
+                "image_urls": image_urls,
+            }
 
-        arguments = {
-            "prompt": prompt,
-            "image_size": quality,
-            "num_images": num_images,
-            "max_images": 1,  # keeps output count <= num_images
-            "enable_safety_checker": False,
-            "image_urls": image_urls,
-        }
+        elif model == "nano_banana_pro":
+            endpoint = self.ENDPOINT_NANO_BANANA_PRO
+            arguments = {
+                "prompt": prompt,
+                "image_urls": image_urls,
+                "num_images": num_images,
+                "resolution": nano_resolution,
+                "aspect_ratio": nano_aspect_ratio,
+                "output_format": nano_output_format,
+                "safety_tolerance": "6",
+            }
 
+        elif model == "qwen_image_2_pro_edit":
+            if not (1 <= len(image_urls) <= 3):
+                raise ValueError(
+                    f"Qwen Image 2 Pro Edit requires 1-3 input images; got {len(image_urls)}."
+                )
+            endpoint = self.ENDPOINT_QWEN_IMAGE_2_PRO_EDIT
+            arguments = {
+                "prompt": prompt,
+                "image_urls": image_urls,
+                "image_size": self._build_qwen_image_size(qwen_image_size, qwen_use_exact_2048),
+                "enable_prompt_expansion": True,
+                "enable_safety_checker": False,
+                "num_images": num_images,
+                "output_format": qwen_output_format,
+            }
+
+        else:
+            raise ValueError(f"Unknown model: {model}")
+
+        print(f"[Nxdify] Starting generation: model={model}, num_images={num_images}, refs={len(image_urls)}")
         result = await asyncio.to_thread(self._subscribe_sync, endpoint, arguments)
 
         if not result:
@@ -379,30 +397,29 @@ class NxdifyNode:
         urls = urls[:num_images]
         print(f"[Nxdify] FAL returned {len(urls)} image URL(s). Downloading...")
 
-        connector = aiohttp.TCPConnector(limit=self.MAX_CONCURRENT_DOWNLOADS)
-        async with aiohttp.ClientSession(connector=connector) as session:
-            tasks = [self._download_one_image(session, url, i) for i, url in enumerate(urls)]
-            pil_images = await asyncio.gather(*tasks)
-
-        tensors = [self.pil_to_tensor(img) for img in pil_images]
-        batch = torch.cat(tensors, dim=0)
-
+        batch = await self._download_batch(urls)
         print(f"[Nxdify] Returning batch tensor: shape={tuple(batch.shape)}")
         return batch
 
     async def process_async(
         self,
+        model: str,
         face_image: torch.Tensor,
         body_image: torch.Tensor,
         prompt: str,
         fal_api_key: str,
-        seedream_version: str,
-        quality: str,
         num_images: int,
+        quality: str,
+        nano_resolution: str,
+        nano_aspect_ratio: str,
+        nano_output_format: str,
+        qwen_image_size: str,
+        qwen_use_exact_2048: bool,
+        qwen_output_format: str,
         breasts_image: Optional[torch.Tensor] = None,
         dynamic_pose_image: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        process_start = time.time()
+        start = time.time()
         print("[Nxdify] ===== Starting process =====")
 
         if not fal_api_key:
@@ -413,7 +430,6 @@ class NxdifyNode:
         os.environ["FAL_KEY"] = fal_api_key
         print("[Nxdify] FAL key configured")
 
-        # Build list of provided images in order: Image1, Image2, Image3?, Image4?
         provided: List[Tuple[str, torch.Tensor, bool]] = [
             ("img1", face_image, True),
             ("img2", body_image, True),
@@ -421,10 +437,8 @@ class NxdifyNode:
         if breasts_image is not None:
             provided.append(("img3", breasts_image, True))
         if dynamic_pose_image is not None:
-            # keep your old "pose not cached" behavior
             provided.append(("img4", dynamic_pose_image, False))
 
-        # Convert tensors to bytes
         print("[Nxdify] Converting input tensors to bytes...")
         byte_items: List[Tuple[str, bytes, bool]] = []
         for label, tens, use_cache in provided:
@@ -433,44 +447,48 @@ class NxdifyNode:
 
         print("[Nxdify] Provided images:", ", ".join([f"{label}={len(b)}B" for label, b, _ in byte_items]))
 
-        # Upload only what exists
         print("[Nxdify] Uploading reference images...")
-        upload_start = time.time()
-
         image_urls: List[str] = []
         for label, b, use_cache in byte_items:
             url = await self.upload_ref_with_retry(b, use_cache=use_cache)
             image_urls.append(url)
             print(f"[Nxdify] Uploaded {label} -> {url[:70]}...")
 
-        print(f"[Nxdify] Uploads done in {time.time() - upload_start:.2f}s")
-
-        # Generate
-        generation_start = time.time()
         batch = await self.generate_images_batch_tensor(
-            seedream_version=seedream_version,
+            model=model,
             image_urls=image_urls,
             prompt=prompt,
-            quality=quality,
             num_images=num_images,
+            quality=quality,
+            nano_resolution=nano_resolution,
+            nano_aspect_ratio=nano_aspect_ratio,
+            nano_output_format=nano_output_format,
+            qwen_image_size=qwen_image_size,
+            qwen_use_exact_2048=qwen_use_exact_2048,
+            qwen_output_format=qwen_output_format,
         )
-        print(f"[Nxdify] Generation+download done in {time.time() - generation_start:.2f}s")
-        print(f"[Nxdify] ===== Total time: {time.time() - process_start:.2f}s =====")
+
+        print(f"[Nxdify] ===== Total time: {time.time() - start:.2f}s =====")
         return batch
 
     def execute(
         self,
+        model: str,
         face_image: torch.Tensor,
         body_image: torch.Tensor,
         prompt: str,
         fal_api_key: str,
-        seedream_version: str,
-        quality: str,
         num_images: int,
+        quality: str,
+        nano_resolution: str,
+        nano_aspect_ratio: str,
+        nano_output_format: str,
+        qwen_image_size: str,
+        qwen_use_exact_2048: bool,
+        qwen_output_format: str,
         breasts_image: Optional[torch.Tensor] = None,
         dynamic_pose_image: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor]:
-        """Synchronous wrapper for async processing."""
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
@@ -478,44 +496,62 @@ class NxdifyNode:
                     future = executor.submit(
                         asyncio.run,
                         self.process_async(
+                            model=model,
                             face_image=face_image,
                             body_image=body_image,
-                            prompt=prompt,
-                            fal_api_key=fal_api_key,
-                            seedream_version=seedream_version,
-                            quality=quality,
-                            num_images=num_images,
                             breasts_image=breasts_image,
                             dynamic_pose_image=dynamic_pose_image,
+                            prompt=prompt,
+                            fal_api_key=fal_api_key,
+                            num_images=num_images,
+                            quality=quality,
+                            nano_resolution=nano_resolution,
+                            nano_aspect_ratio=nano_aspect_ratio,
+                            nano_output_format=nano_output_format,
+                            qwen_image_size=qwen_image_size,
+                            qwen_use_exact_2048=qwen_use_exact_2048,
+                            qwen_output_format=qwen_output_format,
                         ),
                     )
                     result = future.result()
             else:
                 result = loop.run_until_complete(
                     self.process_async(
+                        model=model,
                         face_image=face_image,
                         body_image=body_image,
-                        prompt=prompt,
-                        fal_api_key=fal_api_key,
-                        seedream_version=seedream_version,
-                        quality=quality,
-                        num_images=num_images,
                         breasts_image=breasts_image,
                         dynamic_pose_image=dynamic_pose_image,
+                        prompt=prompt,
+                        fal_api_key=fal_api_key,
+                        num_images=num_images,
+                        quality=quality,
+                        nano_resolution=nano_resolution,
+                        nano_aspect_ratio=nano_aspect_ratio,
+                        nano_output_format=nano_output_format,
+                        qwen_image_size=qwen_image_size,
+                        qwen_use_exact_2048=qwen_use_exact_2048,
+                        qwen_output_format=qwen_output_format,
                     )
                 )
         except RuntimeError:
             result = asyncio.run(
                 self.process_async(
+                    model=model,
                     face_image=face_image,
                     body_image=body_image,
-                    prompt=prompt,
-                    fal_api_key=fal_api_key,
-                    seedream_version=seedream_version,
-                    quality=quality,
-                    num_images=num_images,
                     breasts_image=breasts_image,
                     dynamic_pose_image=dynamic_pose_image,
+                    prompt=prompt,
+                    fal_api_key=fal_api_key,
+                    num_images=num_images,
+                    quality=quality,
+                    nano_resolution=nano_resolution,
+                    nano_aspect_ratio=nano_aspect_ratio,
+                    nano_output_format=nano_output_format,
+                    qwen_image_size=qwen_image_size,
+                    qwen_use_exact_2048=qwen_use_exact_2048,
+                    qwen_output_format=qwen_output_format,
                 )
             )
 
@@ -523,4 +559,4 @@ class NxdifyNode:
 
 
 NODE_CLASS_MAPPINGS = {"NxdifyNode": NxdifyNode}
-NODE_DISPLAY_NAME_MAPPINGS = {"NxdifyNode": "Nxdify Image Generation"}
+NODE_DISPLAY_NAME_MAPPINGS = {"NxdifyNode": "Nxdify Multi-Image Edit"}
