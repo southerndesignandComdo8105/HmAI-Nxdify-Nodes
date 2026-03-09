@@ -33,6 +33,14 @@ class NxdifyNode:
     ENDPOINT_NANO_BANANA_PRO = "fal-ai/nano-banana-pro/edit"
     ENDPOINT_QWEN_IMAGE_2_PRO_EDIT = "fal-ai/qwen-image-2/pro/edit"
 
+    # Keep old/working selector name for backward compatibility
+    VERSION_OPTIONS = [
+        "v5_lite",
+        "v4.5",
+        "nano_banana_pro",
+        "qwen_image_2_pro_edit",
+    ]
+
     SEEDREAM_IMAGE_SIZES = [
         "square_hd",
         "square",
@@ -82,24 +90,15 @@ class NxdifyNode:
 
     @classmethod
     def INPUT_TYPES(cls):
-        # Important: keep prompt / fal_api_key / quality early for older workflow compatibility
+        # Keep this order aligned with the previously working version
         return {
             "required": {
                 "face_image": ("IMAGE",),
                 "body_image": ("IMAGE",),
                 "prompt": ("STRING", {"multiline": True, "default": ""}),
                 "fal_api_key": ("STRING", {"default": "", "password": True}),
+                "seedream_version": (cls.VERSION_OPTIONS, {"default": "v4.5"}),
                 "quality": (cls.SEEDREAM_IMAGE_SIZES, {"default": "auto_4K"}),
-
-                "model": (
-                    [
-                        "seedream_v4_5",
-                        "seedream_v5_lite",
-                        "nano_banana_pro",
-                        "qwen_image_2_pro_edit",
-                    ],
-                    {"default": "seedream_v4_5"},
-                ),
                 "num_images": ("INT", {"default": 4, "min": 1, "max": 8, "step": 1}),
 
                 # Nano Banana Pro
@@ -201,6 +200,43 @@ class NxdifyNode:
     def _upload_file_sync(self, tmp_path: str) -> Any:
         return fal.upload_file(tmp_path)
 
+    def _resolve_api_key(self, fal_api_key: str) -> str:
+        """
+        Prefer the workflow key if present; otherwise fall back to environment.
+        Critically: do not overwrite a valid env key with blank widget data.
+        """
+        key = (fal_api_key or "").strip()
+        if not key:
+            key = (os.getenv("FAL_KEY") or "").strip()
+
+        if not key:
+            raise ValueError("FAL API key is required")
+
+        return key
+
+    def _normalize_selector_and_quality(self, seedream_version: str, quality: str) -> Tuple[str, str]:
+        """
+        Backward-compat safety:
+        If older workflow/widget values drifted and a quality token landed in the selector slot,
+        correct it automatically.
+        """
+        version = seedream_version
+        size = quality
+
+        known_versions = set(self.VERSION_OPTIONS)
+        known_sizes = set(self.SEEDREAM_IMAGE_SIZES)
+
+        # Case: selector accidentally received a size token
+        if version not in known_versions and version in known_sizes:
+            size = version
+            version = "v4.5" if version == "auto_4K" else "v5_lite"
+
+        # Case: values got swapped
+        if version in known_sizes and size in known_versions:
+            version, size = size, version
+
+        return version, size
+
     async def upload_ref_with_retry(self, image_bytes: bytes, use_cache: bool = True, max_attempts: int = 3) -> str:
         upload_start = time.time()
         original_size = len(image_bytes)
@@ -292,10 +328,10 @@ class NxdifyNode:
             b = await resp.read()
         return Image.open(io.BytesIO(b)).convert("RGB")
 
-    def _validate_seedream_quality(self, model: str, quality: str) -> None:
-        if model == "seedream_v4_5" and quality not in self.SEEDREAM_45_VALID:
+    def _validate_seedream_quality(self, seedream_version: str, quality: str) -> None:
+        if seedream_version == "v4.5" and quality not in self.SEEDREAM_45_VALID:
             raise ValueError(f"Quality '{quality}' is not valid for Seedream 4.5.")
-        if model == "seedream_v5_lite" and quality not in self.SEEDREAM_5_VALID:
+        if seedream_version == "v5_lite" and quality not in self.SEEDREAM_5_VALID:
             raise ValueError(f"Quality '{quality}' is not valid for Seedream 5.0 Lite.")
 
     def _build_qwen_image_size(self, qwen_image_size: str, qwen_use_exact_2048: bool) -> Any:
@@ -314,7 +350,7 @@ class NxdifyNode:
 
     async def generate_images_batch_tensor(
         self,
-        model: str,
+        seedream_version: str,
         image_urls: List[str],
         prompt: str,
         num_images: int,
@@ -326,8 +362,10 @@ class NxdifyNode:
         qwen_use_exact_2048: bool,
         qwen_output_format: str,
     ) -> torch.Tensor:
-        if model == "seedream_v4_5":
-            self._validate_seedream_quality(model, quality)
+        seedream_version, quality = self._normalize_selector_and_quality(seedream_version, quality)
+
+        if seedream_version == "v4.5":
+            self._validate_seedream_quality(seedream_version, quality)
             endpoint = self.ENDPOINT_SEEDREAM_45
             arguments = {
                 "prompt": prompt,
@@ -338,8 +376,8 @@ class NxdifyNode:
                 "image_urls": image_urls,
             }
 
-        elif model == "seedream_v5_lite":
-            self._validate_seedream_quality(model, quality)
+        elif seedream_version == "v5_lite":
+            self._validate_seedream_quality(seedream_version, quality)
             endpoint = self.ENDPOINT_SEEDREAM_5
             arguments = {
                 "prompt": prompt,
@@ -350,7 +388,7 @@ class NxdifyNode:
                 "image_urls": image_urls,
             }
 
-        elif model == "nano_banana_pro":
+        elif seedream_version == "nano_banana_pro":
             endpoint = self.ENDPOINT_NANO_BANANA_PRO
             arguments = {
                 "prompt": prompt,
@@ -362,7 +400,7 @@ class NxdifyNode:
                 "safety_tolerance": "6",
             }
 
-        elif model == "qwen_image_2_pro_edit":
+        elif seedream_version == "qwen_image_2_pro_edit":
             if not (1 <= len(image_urls) <= 3):
                 raise ValueError(
                     f"Qwen Image 2 Pro Edit requires 1-3 input images; got {len(image_urls)}."
@@ -379,9 +417,9 @@ class NxdifyNode:
             }
 
         else:
-            raise ValueError(f"Unknown model: {model}")
+            raise ValueError(f"Unknown version/model: {seedream_version}")
 
-        print(f"[Nxdify] Starting generation: model={model}, num_images={num_images}, refs={len(image_urls)}")
+        print(f"[Nxdify] Starting generation: version={seedream_version}, num_images={num_images}, refs={len(image_urls)}")
         result = await asyncio.to_thread(self._subscribe_sync, endpoint, arguments)
 
         if not result:
@@ -406,8 +444,8 @@ class NxdifyNode:
         body_image: torch.Tensor,
         prompt: str,
         fal_api_key: str,
+        seedream_version: str,
         quality: str,
-        model: str,
         num_images: int,
         nano_resolution: str,
         nano_aspect_ratio: str,
@@ -421,14 +459,14 @@ class NxdifyNode:
         start = time.time()
         print("[Nxdify] ===== Starting process =====")
 
-        if not fal_api_key or not fal_api_key.strip():
-            raise ValueError("FAL API key is required")
-
         if not prompt:
             raise ValueError("Prompt is required")
 
-        print(f"[Nxdify] API key present: {bool(fal_api_key)} length={len(fal_api_key) if fal_api_key else 0}")
-        os.environ["FAL_KEY"] = fal_api_key
+        api_key = self._resolve_api_key(fal_api_key)
+        print(f"[Nxdify] API key present: {bool(api_key)} length={len(api_key)}")
+
+        # only set env after resolving a valid key
+        os.environ["FAL_KEY"] = api_key
         print("[Nxdify] FAL key configured")
 
         provided: List[Tuple[str, torch.Tensor, bool]] = [
@@ -456,7 +494,7 @@ class NxdifyNode:
             print(f"[Nxdify] Uploaded {label} -> {url[:70]}...")
 
         batch = await self.generate_images_batch_tensor(
-            model=model,
+            seedream_version=seedream_version,
             image_urls=image_urls,
             prompt=prompt,
             num_images=num_images,
@@ -478,8 +516,8 @@ class NxdifyNode:
         body_image: torch.Tensor,
         prompt: str,
         fal_api_key: str,
+        seedream_version: str,
         quality: str,
-        model: str,
         num_images: int,
         nano_resolution: str,
         nano_aspect_ratio: str,
@@ -501,8 +539,8 @@ class NxdifyNode:
                             body_image=body_image,
                             prompt=prompt,
                             fal_api_key=fal_api_key,
+                            seedream_version=seedream_version,
                             quality=quality,
-                            model=model,
                             num_images=num_images,
                             nano_resolution=nano_resolution,
                             nano_aspect_ratio=nano_aspect_ratio,
@@ -522,8 +560,8 @@ class NxdifyNode:
                         body_image=body_image,
                         prompt=prompt,
                         fal_api_key=fal_api_key,
+                        seedream_version=seedream_version,
                         quality=quality,
-                        model=model,
                         num_images=num_images,
                         nano_resolution=nano_resolution,
                         nano_aspect_ratio=nano_aspect_ratio,
@@ -542,8 +580,8 @@ class NxdifyNode:
                     body_image=body_image,
                     prompt=prompt,
                     fal_api_key=fal_api_key,
+                    seedream_version=seedream_version,
                     quality=quality,
-                    model=model,
                     num_images=num_images,
                     nano_resolution=nano_resolution,
                     nano_aspect_ratio=nano_aspect_ratio,
@@ -560,4 +598,4 @@ class NxdifyNode:
 
 
 NODE_CLASS_MAPPINGS = {"NxdifyNode": NxdifyNode}
-NODE_DISPLAY_NAME_MAPPINGS = {"NxdifyNode": "Nxdify Multi-Image Edit"}
+NODE_DISPLAY_NAME_MAPPINGS = {"NxdifyNode": "Nxdify Image Generation"}
