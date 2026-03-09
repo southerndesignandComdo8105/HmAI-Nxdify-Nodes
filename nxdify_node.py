@@ -203,7 +203,7 @@ class NxdifyNode:
     def _resolve_api_key(self, fal_api_key: str) -> str:
         """
         Prefer the workflow key if present; otherwise fall back to environment.
-        Critically: do not overwrite a valid env key with blank widget data.
+        Do not overwrite a valid env key with blank widget data.
         """
         key = (fal_api_key or "").strip()
         if not key:
@@ -226,12 +226,10 @@ class NxdifyNode:
         known_versions = set(self.VERSION_OPTIONS)
         known_sizes = set(self.SEEDREAM_IMAGE_SIZES)
 
-        # Case: selector accidentally received a size token
         if version not in known_versions and version in known_sizes:
             size = version
             version = "v4.5" if version == "auto_4K" else "v5_lite"
 
-        # Case: values got swapped
         if version in known_sizes and size in known_versions:
             version, size = size, version
 
@@ -465,7 +463,6 @@ class NxdifyNode:
         api_key = self._resolve_api_key(fal_api_key)
         print(f"[Nxdify] API key present: {bool(api_key)} length={len(api_key)}")
 
-        # only set env after resolving a valid key
         os.environ["FAL_KEY"] = api_key
         print("[Nxdify] FAL key configured")
 
@@ -510,6 +507,19 @@ class NxdifyNode:
         print(f"[Nxdify] ===== Total time: {time.time() - start:.2f}s =====")
         return batch
 
+    def _run_coroutine_in_new_loop(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            return loop.run_until_complete(coro)
+        finally:
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
+                pass
+            asyncio.set_event_loop(None)
+            loop.close()
+
     def execute(
         self,
         face_image: torch.Tensor,
@@ -528,71 +538,30 @@ class NxdifyNode:
         breasts_image: Optional[torch.Tensor] = None,
         dynamic_pose_image: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor]:
+        coro = self.process_async(
+            face_image=face_image,
+            body_image=body_image,
+            prompt=prompt,
+            fal_api_key=fal_api_key,
+            seedream_version=seedream_version,
+            quality=quality,
+            num_images=num_images,
+            nano_resolution=nano_resolution,
+            nano_aspect_ratio=nano_aspect_ratio,
+            nano_output_format=nano_output_format,
+            qwen_image_size=qwen_image_size,
+            qwen_use_exact_2048=qwen_use_exact_2048,
+            qwen_output_format=qwen_output_format,
+            breasts_image=breasts_image,
+            dynamic_pose_image=dynamic_pose_image,
+        )
+
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(
-                        asyncio.run,
-                        self.process_async(
-                            face_image=face_image,
-                            body_image=body_image,
-                            prompt=prompt,
-                            fal_api_key=fal_api_key,
-                            seedream_version=seedream_version,
-                            quality=quality,
-                            num_images=num_images,
-                            nano_resolution=nano_resolution,
-                            nano_aspect_ratio=nano_aspect_ratio,
-                            nano_output_format=nano_output_format,
-                            qwen_image_size=qwen_image_size,
-                            qwen_use_exact_2048=qwen_use_exact_2048,
-                            qwen_output_format=qwen_output_format,
-                            breasts_image=breasts_image,
-                            dynamic_pose_image=dynamic_pose_image,
-                        ),
-                    )
-                    result = future.result()
-            else:
-                result = loop.run_until_complete(
-                    self.process_async(
-                        face_image=face_image,
-                        body_image=body_image,
-                        prompt=prompt,
-                        fal_api_key=fal_api_key,
-                        seedream_version=seedream_version,
-                        quality=quality,
-                        num_images=num_images,
-                        nano_resolution=nano_resolution,
-                        nano_aspect_ratio=nano_aspect_ratio,
-                        nano_output_format=nano_output_format,
-                        qwen_image_size=qwen_image_size,
-                        qwen_use_exact_2048=qwen_use_exact_2048,
-                        qwen_output_format=qwen_output_format,
-                        breasts_image=breasts_image,
-                        dynamic_pose_image=dynamic_pose_image,
-                    )
-                )
+            asyncio.get_running_loop()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                result = executor.submit(self._run_coroutine_in_new_loop, coro).result()
         except RuntimeError:
-            result = asyncio.run(
-                self.process_async(
-                    face_image=face_image,
-                    body_image=body_image,
-                    prompt=prompt,
-                    fal_api_key=fal_api_key,
-                    seedream_version=seedream_version,
-                    quality=quality,
-                    num_images=num_images,
-                    nano_resolution=nano_resolution,
-                    nano_aspect_ratio=nano_aspect_ratio,
-                    nano_output_format=nano_output_format,
-                    qwen_image_size=qwen_image_size,
-                    qwen_use_exact_2048=qwen_use_exact_2048,
-                    qwen_output_format=qwen_output_format,
-                    breasts_image=breasts_image,
-                    dynamic_pose_image=dynamic_pose_image,
-                )
-            )
+            result = self._run_coroutine_in_new_loop(coro)
 
         return (result,)
 
