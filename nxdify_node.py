@@ -519,7 +519,7 @@ class NxdifyNode:
                 "thinking_mode": False if image_urls else wan_thinking_mode,
                 "watermark": False,
                 "seed": seed,
-                "bbox_list": [[]],
+                "bbox_list": [[] for _ in image_urls],
                 "nsfw_checker": False,
             }
             if wan_aspect_ratio != "auto":
