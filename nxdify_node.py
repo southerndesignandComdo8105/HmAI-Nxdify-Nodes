@@ -1,7 +1,7 @@
 import io
 import os
 import time
-import tempfile
+import json
 import hashlib
 import asyncio
 import concurrent.futures
@@ -10,106 +10,95 @@ from typing import Tuple, Dict, List, Optional, Any
 from PIL import Image
 import torch
 import numpy as np
-import fal_client as fal
 import aiohttp
 
 
 class NxdifyNode:
     """
-    ComfyUI node for multi-image edit using FAL endpoints.
+    ComfyUI node for multi-image edit and image-to-video using Kie.ai Market APIs.
 
     Supports:
       - Seedream 4.5 Edit
-      - Seedream 5.0 Lite Edit
-      - Nano Banana Pro Edit
-      - Qwen Image 2 Pro Edit
+      - Seedream 5.0 Lite Image to Image
+      - Qwen2 Image Edit
+      - Wan 2.7 Image Pro
+      - Wan 2.7 Image to Video
 
     Uses up to 4 image inputs in ComfyUI, but individual endpoints may enforce stricter limits.
-    Returns a ComfyUI IMAGE batch (BHWC).
+    Returns a ComfyUI IMAGE batch (BHWC) and a video URL string for video mode.
     """
 
-    ENDPOINT_SEEDREAM_45 = "fal-ai/bytedance/seedream/v4.5/edit"
-    ENDPOINT_SEEDREAM_5 = "fal-ai/bytedance/seedream/v5/lite/edit"
-    ENDPOINT_NANO_BANANA_PRO = "fal-ai/nano-banana-pro/edit"
-    ENDPOINT_QWEN_IMAGE_2_PRO_EDIT = "fal-ai/qwen-image-2/pro/edit"
+    KIE_API_BASE = "https://api.kie.ai"
+    KIE_UPLOAD_BASE = "https://kieai.redpandaai.co"
+    CREATE_TASK_URL = f"{KIE_API_BASE}/api/v1/jobs/createTask"
+    TASK_STATUS_URL = f"{KIE_API_BASE}/api/v1/jobs/recordInfo"
+    FILE_UPLOAD_URL = f"{KIE_UPLOAD_BASE}/api/file-stream-upload"
 
-    # Keep old/working selector name for backward compatibility
+    MODEL_SEEDREAM_45 = "seedream/4.5-edit"
+    MODEL_SEEDREAM_5 = "seedream/5-lite-image-to-image"
+    MODEL_QWEN2_IMAGE_EDIT = "qwen2/image-edit"
+    MODEL_WAN_IMAGE_PRO = "wan/2-7-image-pro"
+    MODEL_WAN_IMAGE_TO_VIDEO = "wan/2-7-image-to-video"
+
+    GENERATION_TYPES = ["image", "video"]
+
+    # Keep old/working selector name for backward compatibility.
     VERSION_OPTIONS = [
         "v5_lite",
         "v4.5",
-        "nano_banana_pro",
-        "qwen_image_2_pro_edit",
+        "qwen2_image_edit",
+        "wan_2.7_image_pro",
     ]
 
-    SEEDREAM_IMAGE_SIZES = [
-        "square_hd",
-        "square",
-        "portrait_4_3",
-        "portrait_16_9",
-        "landscape_4_3",
-        "landscape_16_9",
-        "auto_2K",
-        "auto_3K",
-        "auto_4K",
-    ]
+    ASPECT_RATIOS = ["1:1", "4:3", "3:4", "16:9", "9:16", "2:3", "3:2", "21:9"]
+    SEEDREAM_QUALITIES = ["basic", "high"]
+    QWEN_OUTPUT_FORMATS = ["png", "jpeg"]
 
-    SEEDREAM_45_VALID = {
-        "square_hd",
-        "square",
-        "portrait_4_3",
-        "portrait_16_9",
-        "landscape_4_3",
-        "landscape_16_9",
-        "auto_2K",
-        "auto_4K",
-    }
+    WAN_ASPECT_RATIOS = ["auto", "1:1", "16:9", "4:3", "21:9", "3:4", "9:16", "8:1", "1:8"]
+    WAN_RESOLUTIONS = ["1K", "2K", "4K"]
 
-    SEEDREAM_5_VALID = {
-        "square_hd",
-        "square",
-        "portrait_4_3",
-        "portrait_16_9",
-        "landscape_4_3",
-        "landscape_16_9",
-        "auto_2K",
-        "auto_3K",
-    }
-
-    QWEN_IMAGE_SIZES = [
-        "square_hd",
-        "square",
-        "portrait_4_3",
-        "portrait_16_9",
-        "landscape_4_3",
-        "landscape_16_9",
-    ]
-
-    NANO_RESOLUTIONS = ["1K", "2K", "4K"]
-    NANO_ASPECT_RATIOS = ["auto", "21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16"]
-    NANO_OUTPUT_FORMATS = ["png", "jpeg", "webp"]
+    VIDEO_MODES = ["first_frame", "first_and_last_frame"]
+    VIDEO_RESOLUTIONS = ["720p", "1080p"]
 
     @classmethod
     def INPUT_TYPES(cls):
-        # Keep this order aligned with the previously working version
+        # Keep the same core image inputs, then group the Kie.ai model controls.
         return {
             "required": {
                 "face_image": ("IMAGE",),
                 "body_image": ("IMAGE",),
                 "prompt": ("STRING", {"multiline": True, "default": ""}),
-                "fal_api_key": ("STRING", {"default": "", "password": True}),
+                "kie_api_key": ("STRING", {"default": "", "password": True}),
+                "generation_type": (cls.GENERATION_TYPES, {"default": "image"}),
                 "seedream_version": (cls.VERSION_OPTIONS, {"default": "v4.5"}),
-                "quality": (cls.SEEDREAM_IMAGE_SIZES, {"default": "auto_4K"}),
-                "num_images": ("INT", {"default": 4, "min": 1, "max": 8, "step": 1}),
+                "num_images": ("INT", {"default": 4, "min": 1, "max": 12, "step": 1}),
 
-                # Nano Banana Pro
-                "nano_resolution": (cls.NANO_RESOLUTIONS, {"default": "1K"}),
-                "nano_aspect_ratio": (cls.NANO_ASPECT_RATIOS, {"default": "auto"}),
-                "nano_output_format": (cls.NANO_OUTPUT_FORMATS, {"default": "png"}),
+                # Seedream 4.5 / 5.0 Lite
+                "seedream_aspect_ratio": (cls.ASPECT_RATIOS, {"default": "1:1"}),
+                "seedream_quality": (cls.SEEDREAM_QUALITIES, {"default": "basic"}),
 
-                # Qwen
-                "qwen_image_size": (cls.QWEN_IMAGE_SIZES, {"default": "square_hd"}),
-                "qwen_use_exact_2048": ("BOOLEAN", {"default": True}),
-                "qwen_output_format": (["png", "jpeg", "webp"], {"default": "png"}),
+                # Qwen2 Image Edit
+                "qwen_image_size": (cls.ASPECT_RATIOS, {"default": "16:9"}),
+                "qwen_output_format": (cls.QWEN_OUTPUT_FORMATS, {"default": "png"}),
+
+                # Wan 2.7 Image Pro
+                "wan_aspect_ratio": (cls.WAN_ASPECT_RATIOS, {"default": "auto"}),
+                "wan_resolution": (cls.WAN_RESOLUTIONS, {"default": "2K"}),
+                "wan_enable_sequential": ("BOOLEAN", {"default": False}),
+                "wan_thinking_mode": ("BOOLEAN", {"default": False}),
+
+                # Shared Kie.ai seed
+                "seed": ("INT", {"default": 0, "min": 0, "max": 2147483647, "step": 1}),
+
+                # Wan 2.7 Image to Video
+                "video_mode": (cls.VIDEO_MODES, {"default": "first_frame"}),
+                "video_negative_prompt": (
+                    "STRING",
+                    {"multiline": True, "default": "blurry, flicker, low quality, distorted"},
+                ),
+                "video_resolution": (cls.VIDEO_RESOLUTIONS, {"default": "1080p"}),
+                "video_duration": ("INT", {"default": 5, "min": 2, "max": 15, "step": 1}),
+                "video_prompt_extend": ("BOOLEAN", {"default": True}),
             },
             "optional": {
                 "breasts_image": ("IMAGE",),
@@ -117,13 +106,15 @@ class NxdifyNode:
             },
         }
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("image", "video_url")
     FUNCTION = "execute"
     CATEGORY = "image/generation"
 
-    MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5MB
+    MAX_IMAGE_SIZE = 10 * 1024 * 1024  # Kie.ai image upload max is 10MB.
     MAX_CONCURRENT_DOWNLOADS = 8
+    TASK_TIMEOUT_SECONDS = 15 * 60
+    VIDEO_TASK_TIMEOUT_SECONDS = 30 * 60
 
     _image_url_cache: Dict[str, str] = {}
 
@@ -197,45 +188,47 @@ class NxdifyNode:
     def _compute_image_hash(self, image_bytes: bytes) -> str:
         return hashlib.sha256(image_bytes).hexdigest()
 
-    def _upload_file_sync(self, tmp_path: str) -> Any:
-        return fal.upload_file(tmp_path)
-
-    def _resolve_api_key(self, fal_api_key: str) -> str:
+    def _resolve_api_key(self, kie_api_key: str) -> str:
         """
         Prefer the workflow key if present; otherwise fall back to environment.
         Do not overwrite a valid env key with blank widget data.
         """
-        key = (fal_api_key or "").strip()
+        key = (kie_api_key or "").strip()
         if not key:
-            key = (os.getenv("FAL_KEY") or "").strip()
+            key = (os.getenv("KIE_API_KEY") or os.getenv("KIE_AI_API_KEY") or "").strip()
 
         if not key:
-            raise ValueError("FAL API key is required")
+            raise ValueError("Kie.ai API key is required")
 
         return key
 
-    def _normalize_selector_and_quality(self, seedream_version: str, quality: str) -> Tuple[str, str]:
-        """
-        Backward-compat safety:
-        If older workflow/widget values drifted and a quality token landed in the selector slot,
-        correct it automatically.
-        """
+    def _auth_headers(self, api_key: str) -> Dict[str, str]:
+        return {"Authorization": f"Bearer {api_key}"}
+
+    def _normalize_selector(self, seedream_version: str) -> str:
         version = seedream_version
-        size = quality
+        legacy_map = {
+            "qwen_image_2_pro_edit": "qwen2_image_edit",
+            "qwen_image_edit": "qwen2_image_edit",
+        }
+        if version in legacy_map:
+            version = legacy_map[version]
 
-        known_versions = set(self.VERSION_OPTIONS)
-        known_sizes = set(self.SEEDREAM_IMAGE_SIZES)
+        if version in {"nano_banana_pro", "flux", "flux_kontext"}:
+            raise ValueError(f"Model '{seedream_version}' was removed from this Kie.ai version of the node.")
 
-        if version not in known_versions and version in known_sizes:
-            size = version
-            version = "v4.5" if version == "auto_4K" else "v5_lite"
+        if version not in self.VERSION_OPTIONS:
+            raise ValueError(f"Unknown version/model: {seedream_version}")
 
-        if version in known_sizes and size in known_versions:
-            version, size = size, version
+        return version
 
-        return version, size
-
-    async def upload_ref_with_retry(self, image_bytes: bytes, use_cache: bool = True, max_attempts: int = 3) -> str:
+    async def upload_ref_with_retry(
+        self,
+        image_bytes: bytes,
+        api_key: str,
+        use_cache: bool = True,
+        max_attempts: int = 3,
+    ) -> str:
         upload_start = time.time()
         original_size = len(image_bytes)
 
@@ -250,73 +243,169 @@ class NxdifyNode:
         compressed = self.compress_image_bytes_max(image_bytes, self.MAX_IMAGE_SIZE)
         print(f"[Nxdify] Compressed to {len(compressed)} bytes")
 
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-            tmp.write(compressed)
-            tmp_path = tmp.name
+        if image_hash is None:
+            image_hash = self._compute_image_hash(image_bytes)
 
-        try:
-            for attempt in range(max_attempts):
-                try:
-                    print(f"[Nxdify] Uploading image (attempt {attempt + 1}/{max_attempts})...")
-                    result = await asyncio.to_thread(self._upload_file_sync, tmp_path)
+        file_name = f"nxdify-{image_hash[:16]}.jpg"
+        headers = self._auth_headers(api_key)
+        timeout = aiohttp.ClientTimeout(total=120)
 
-                    if isinstance(result, dict) and "url" in result:
-                        url = result["url"]
-                    elif isinstance(result, str):
-                        url = result
-                    else:
-                        raise ValueError(f"Unexpected upload response: {result}")
-
-                    if use_cache:
-                        if image_hash is None:
-                            image_hash = self._compute_image_hash(image_bytes)
-                        self._image_url_cache[image_hash] = url
-
-                    print(f"[Nxdify] Upload successful in {time.time() - upload_start:.2f}s")
-                    return url
-
-                except Exception as e:
-                    if attempt == max_attempts - 1:
-                        raise
-                    err = str(e).lower()
-                    if "timeout" in err or "408" in err:
-                        backoff = 2 + attempt * 3
-                        print(f"[Nxdify] Upload timeout; retry in {backoff}s")
-                        await asyncio.sleep(backoff)
-                        continue
-                    raise
-        finally:
+        for attempt in range(max_attempts):
             try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+                print(f"[Nxdify] Uploading image to Kie.ai (attempt {attempt + 1}/{max_attempts})...")
+                form = aiohttp.FormData()
+                form.add_field("file", compressed, filename=file_name, content_type="image/jpeg")
+                form.add_field("uploadPath", "images/nxdify")
+                form.add_field("fileName", file_name)
 
-    def _subscribe_sync(self, endpoint: str, arguments: dict):
-        print(f"[Nxdify] Submitting job: {endpoint}")
+                async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+                    async with session.post(self.FILE_UPLOAD_URL, data=form) as resp:
+                        payload = await resp.json(content_type=None)
+
+                if payload.get("code") != 200 or payload.get("success") is False:
+                    raise ValueError(f"Kie.ai upload failed: {payload}")
+
+                data = payload.get("data") or {}
+                url = data.get("downloadUrl") or data.get("fileUrl") or data.get("url")
+                if not url:
+                    raise ValueError(f"No upload URL found in Kie.ai response: {payload}")
+
+                if use_cache:
+                    self._image_url_cache[image_hash] = url
+
+                print(f"[Nxdify] Upload successful in {time.time() - upload_start:.2f}s")
+                return url
+
+            except Exception as e:
+                if attempt == max_attempts - 1:
+                    raise
+                err = str(e).lower()
+                if "timeout" in err or "408" in err or "429" in err or "500" in err:
+                    backoff = 2 + attempt * 3
+                    print(f"[Nxdify] Upload issue; retry in {backoff}s: {e}")
+                    await asyncio.sleep(backoff)
+                    continue
+                raise
+
+        raise ValueError("Kie.ai upload failed after retries")
+
+    async def _create_task(self, api_key: str, model: str, input_payload: dict) -> str:
+        headers = self._auth_headers(api_key)
+        headers["Content-Type"] = "application/json"
+        payload = {"model": model, "input": input_payload}
+        timeout = aiohttp.ClientTimeout(total=60)
+
+        print(f"[Nxdify] Submitting Kie.ai task: {model}")
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            async with session.post(self.CREATE_TASK_URL, json=payload) as resp:
+                result = await resp.json(content_type=None)
+
+        if result.get("code") != 200:
+            raise ValueError(f"Kie.ai createTask failed for {model}: {result}")
+
+        data = result.get("data") or {}
+        task_id = data.get("taskId")
+        if not task_id:
+            raise ValueError(f"Kie.ai createTask did not return taskId: {result}")
+
+        return task_id
+
+    async def _poll_task(self, api_key: str, task_id: str, timeout_seconds: int) -> dict:
+        headers = self._auth_headers(api_key)
+        timeout = aiohttp.ClientTimeout(total=60)
         start = time.time()
-        result = fal.subscribe(endpoint, arguments=arguments, with_logs=False)
-        print(f"[Nxdify] FAL job completed in {time.time() - start:.2f}s")
+        delay = 2.0
+
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            while time.time() - start < timeout_seconds:
+                async with session.get(self.TASK_STATUS_URL, params={"taskId": task_id}) as resp:
+                    payload = await resp.json(content_type=None)
+
+                data = payload.get("data") or {}
+                state = (data.get("state") or data.get("status") or "").lower()
+                progress = data.get("progress")
+                if progress is not None:
+                    print(f"[Nxdify] Kie.ai task {task_id}: state={state or 'unknown'} progress={progress}")
+                else:
+                    print(f"[Nxdify] Kie.ai task {task_id}: state={state or 'unknown'}")
+
+                if state == "success":
+                    print(f"[Nxdify] Kie.ai task completed in {time.time() - start:.2f}s")
+                    return data
+
+                if state in {"fail", "failed", "error"}:
+                    fail_msg = data.get("failMsg") or data.get("error") or payload.get("msg") or "unknown error"
+                    raise ValueError(f"Kie.ai task failed: {fail_msg}")
+
+                await asyncio.sleep(delay)
+                delay = min(delay * 1.25, 10.0)
+
+        raise TimeoutError(f"Kie.ai task timed out after {timeout_seconds}s: {task_id}")
+
+    async def _run_kie_task(
+        self,
+        api_key: str,
+        model: str,
+        input_payload: dict,
+        timeout_seconds: int,
+    ) -> dict:
+        start = time.time()
+        task_id = await self._create_task(api_key, model, input_payload)
+        result = await self._poll_task(api_key, task_id, timeout_seconds)
+        print(f"[Nxdify] Kie.ai job finished in {time.time() - start:.2f}s")
         return result
 
-    def _extract_image_urls_from_result(self, result: Any) -> List[str]:
-        images = None
-        if isinstance(result, dict):
-            if "images" in result:
-                images = result["images"]
-            elif "output" in result and isinstance(result["output"], dict):
-                images = result["output"].get("images")
-
-        if not images:
-            return []
-
+    def _extract_urls_from_result(self, result: Any) -> List[str]:
         urls: List[str] = []
-        for item in images:
-            if isinstance(item, dict):
-                url = item.get("url") or item.get("image_url")
-            else:
-                url = item
-            if url:
-                urls.append(url)
+
+        def add_url(value: Any) -> None:
+            if isinstance(value, str) and value.startswith(("http://", "https://")) and value not in urls:
+                urls.append(value)
+
+        def walk(value: Any) -> None:
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped.startswith("{") or stripped.startswith("["):
+                    try:
+                        walk(json.loads(stripped))
+                        return
+                    except json.JSONDecodeError:
+                        pass
+                add_url(stripped)
+                return
+
+            if isinstance(value, list):
+                for item in value:
+                    walk(item)
+                return
+
+            if isinstance(value, dict):
+                for key in (
+                    "resultUrls",
+                    "resultUrl",
+                    "result_url",
+                    "imageUrls",
+                    "image_urls",
+                    "videoUrls",
+                    "video_urls",
+                    "download_url",
+                    "images",
+                    "videos",
+                    "urls",
+                    "url",
+                    "image_url",
+                    "video_url",
+                    "downloadUrl",
+                    "fileUrl",
+                ):
+                    if key in value:
+                        walk(value[key])
+
+                for nested_key in ("result", "output", "data", "resultJson"):
+                    if nested_key in value:
+                        walk(value[nested_key])
+
+        walk(result)
         return urls
 
     async def _download_one_image(self, session: aiohttp.ClientSession, url: str, idx: int) -> Image.Image:
@@ -325,17 +414,6 @@ class NxdifyNode:
                 raise ValueError(f"Failed to download image {idx}: HTTP {resp.status}")
             b = await resp.read()
         return Image.open(io.BytesIO(b)).convert("RGB")
-
-    def _validate_seedream_quality(self, seedream_version: str, quality: str) -> None:
-        if seedream_version == "v4.5" and quality not in self.SEEDREAM_45_VALID:
-            raise ValueError(f"Quality '{quality}' is not valid for Seedream 4.5.")
-        if seedream_version == "v5_lite" and quality not in self.SEEDREAM_5_VALID:
-            raise ValueError(f"Quality '{quality}' is not valid for Seedream 5.0 Lite.")
-
-    def _build_qwen_image_size(self, qwen_image_size: str, qwen_use_exact_2048: bool) -> Any:
-        if qwen_use_exact_2048:
-            return {"width": 2048, "height": 2048}
-        return qwen_image_size
 
     async def _download_batch(self, urls: List[str]) -> torch.Tensor:
         connector = aiohttp.TCPConnector(limit=self.MAX_CONCURRENT_DOWNLOADS)
@@ -346,134 +424,226 @@ class NxdifyNode:
         tensors = [self.pil_to_tensor(img) for img in pil_images]
         return torch.cat(tensors, dim=0)
 
+    async def _run_repeated_image_tasks(
+        self,
+        api_key: str,
+        model: str,
+        input_payloads: List[dict],
+    ) -> List[str]:
+        tasks = [
+            self._run_kie_task(api_key, model, input_payload, self.TASK_TIMEOUT_SECONDS)
+            for input_payload in input_payloads
+        ]
+        results = await asyncio.gather(*tasks)
+
+        urls: List[str] = []
+        for result in results:
+            urls.extend(self._extract_urls_from_result(result))
+        return urls
+
     async def generate_images_batch_tensor(
         self,
+        api_key: str,
         seedream_version: str,
         image_urls: List[str],
         prompt: str,
         num_images: int,
-        quality: str,
-        nano_resolution: str,
-        nano_aspect_ratio: str,
-        nano_output_format: str,
+        seedream_aspect_ratio: str,
+        seedream_quality: str,
         qwen_image_size: str,
-        qwen_use_exact_2048: bool,
         qwen_output_format: str,
+        wan_aspect_ratio: str,
+        wan_resolution: str,
+        wan_enable_sequential: bool,
+        wan_thinking_mode: bool,
+        seed: int,
     ) -> torch.Tensor:
-        seedream_version, quality = self._normalize_selector_and_quality(seedream_version, quality)
+        seedream_version = self._normalize_selector(seedream_version)
 
         if seedream_version == "v4.5":
-            self._validate_seedream_quality(seedream_version, quality)
-            endpoint = self.ENDPOINT_SEEDREAM_45
-            arguments = {
+            input_payload = {
                 "prompt": prompt,
-                "image_size": quality,
-                "num_images": num_images,
-                "max_images": 1,
-                "enable_safety_checker": False,
                 "image_urls": image_urls,
+                "aspect_ratio": seedream_aspect_ratio,
+                "quality": seedream_quality,
+                "nsfw_checker": False,
             }
+            input_payloads = [dict(input_payload) for _ in range(num_images)]
+            urls = await self._run_repeated_image_tasks(api_key, self.MODEL_SEEDREAM_45, input_payloads)
 
         elif seedream_version == "v5_lite":
-            self._validate_seedream_quality(seedream_version, quality)
-            endpoint = self.ENDPOINT_SEEDREAM_5
-            arguments = {
-                "prompt": prompt,
-                "image_size": quality,
-                "num_images": num_images,
-                "max_images": 1,
-                "enable_safety_checker": False,
-                "image_urls": image_urls,
-            }
-
-        elif seedream_version == "nano_banana_pro":
-            endpoint = self.ENDPOINT_NANO_BANANA_PRO
-            arguments = {
+            input_payload = {
                 "prompt": prompt,
                 "image_urls": image_urls,
-                "num_images": num_images,
-                "resolution": nano_resolution,
-                "aspect_ratio": nano_aspect_ratio,
-                "output_format": nano_output_format,
-                "safety_tolerance": "6",
+                "aspect_ratio": seedream_aspect_ratio,
+                "quality": seedream_quality,
+                "nsfw_checker": False,
             }
+            input_payloads = [dict(input_payload) for _ in range(num_images)]
+            urls = await self._run_repeated_image_tasks(api_key, self.MODEL_SEEDREAM_5, input_payloads)
 
-        elif seedream_version == "qwen_image_2_pro_edit":
-            if not (1 <= len(image_urls) <= 3):
-                raise ValueError(
-                    f"Qwen Image 2 Pro Edit requires 1-3 input images; got {len(image_urls)}."
+        elif seedream_version == "qwen2_image_edit":
+            if not image_urls:
+                raise ValueError("Qwen2 Image Edit requires one input image URL.")
+            if len(image_urls) > 1:
+                print("[Nxdify] Qwen2 Image Edit accepts one image_url; using the first uploaded image.")
+
+            input_payloads = []
+            for index in range(num_images):
+                task_seed = min(seed + index, 2147483647)
+                input_payloads.append(
+                    {
+                        "prompt": prompt,
+                        "image_url": image_urls[0],
+                        "image_size": qwen_image_size,
+                        "output_format": qwen_output_format,
+                        "seed": task_seed,
+                        "nsfw_checker": False,
+                    }
                 )
-            endpoint = self.ENDPOINT_QWEN_IMAGE_2_PRO_EDIT
-            arguments = {
+            urls = await self._run_repeated_image_tasks(api_key, self.MODEL_QWEN2_IMAGE_EDIT, input_payloads)
+
+        elif seedream_version == "wan_2.7_image_pro":
+            if not wan_enable_sequential and num_images > 4:
+                raise ValueError("Wan 2.7 Image Pro supports 1-4 images unless wan_enable_sequential is true.")
+
+            if wan_thinking_mode and image_urls:
+                print("[Nxdify] Wan thinking_mode is only available without input images; disabling for image edit.")
+
+            input_payload = {
                 "prompt": prompt,
-                "image_urls": image_urls,
-                "image_size": self._build_qwen_image_size(qwen_image_size, qwen_use_exact_2048),
-                "enable_prompt_expansion": True,
-                "enable_safety_checker": False,
-                "num_images": num_images,
-                "output_format": qwen_output_format,
+                "input_urls": image_urls,
+                "n": num_images,
+                "enable_sequential": wan_enable_sequential,
+                "resolution": wan_resolution,
+                "thinking_mode": False if image_urls else wan_thinking_mode,
+                "watermark": False,
+                "seed": seed,
+                "bbox_list": [[]],
+                "nsfw_checker": False,
             }
+            if wan_aspect_ratio != "auto":
+                input_payload["aspect_ratio"] = wan_aspect_ratio
+
+            result = await self._run_kie_task(
+                api_key,
+                self.MODEL_WAN_IMAGE_PRO,
+                input_payload,
+                self.TASK_TIMEOUT_SECONDS,
+            )
+            urls = self._extract_urls_from_result(result)
 
         else:
             raise ValueError(f"Unknown version/model: {seedream_version}")
 
-        print(f"[Nxdify] Starting generation: version={seedream_version}, num_images={num_images}, refs={len(image_urls)}")
-        result = await asyncio.to_thread(self._subscribe_sync, endpoint, arguments)
-
-        if not result:
-            raise ValueError("No result returned from FAL API")
-
-        urls = self._extract_image_urls_from_result(result)
         if not urls:
-            if isinstance(result, dict):
-                raise ValueError(f"No image URLs found in FAL result. Keys: {list(result.keys())}")
-            raise ValueError(f"No image URLs found in FAL result. Type: {type(result)}")
+            raise ValueError("No image URLs found in Kie.ai result.")
 
         urls = urls[:num_images]
-        print(f"[Nxdify] FAL returned {len(urls)} image URL(s). Downloading...")
+        print(f"[Nxdify] Kie.ai returned {len(urls)} image URL(s). Downloading...")
 
         batch = await self._download_batch(urls)
         print(f"[Nxdify] Returning batch tensor: shape={tuple(batch.shape)}")
         return batch
+
+    async def generate_video_url(
+        self,
+        api_key: str,
+        image_urls: List[str],
+        prompt: str,
+        video_mode: str,
+        video_negative_prompt: str,
+        video_resolution: str,
+        video_duration: int,
+        video_prompt_extend: bool,
+        seed: int,
+    ) -> str:
+        if not image_urls:
+            raise ValueError("Wan 2.7 Image to Video requires at least one input image.")
+        if video_mode == "first_and_last_frame" and len(image_urls) < 2:
+            raise ValueError("first_and_last_frame video mode requires two input images.")
+
+        input_payload = {
+            "prompt": prompt,
+            "negative_prompt": video_negative_prompt,
+            "first_frame_url": image_urls[0],
+            "resolution": video_resolution,
+            "duration": video_duration,
+            "prompt_extend": video_prompt_extend,
+            "watermark": False,
+            "seed": seed,
+            "nsfw_checker": False,
+        }
+        if video_mode == "first_and_last_frame":
+            input_payload["last_frame_url"] = image_urls[1]
+
+        result = await self._run_kie_task(
+            api_key,
+            self.MODEL_WAN_IMAGE_TO_VIDEO,
+            input_payload,
+            self.VIDEO_TASK_TIMEOUT_SECONDS,
+        )
+        urls = self._extract_urls_from_result(result)
+        if not urls:
+            raise ValueError("No video URL found in Kie.ai result.")
+
+        print(f"[Nxdify] Returning video URL: {urls[0]}")
+        return urls[0]
 
     async def process_async(
         self,
         face_image: torch.Tensor,
         body_image: torch.Tensor,
         prompt: str,
-        fal_api_key: str,
+        kie_api_key: str,
+        generation_type: str,
         seedream_version: str,
-        quality: str,
         num_images: int,
-        nano_resolution: str,
-        nano_aspect_ratio: str,
-        nano_output_format: str,
+        seedream_aspect_ratio: str,
+        seedream_quality: str,
         qwen_image_size: str,
-        qwen_use_exact_2048: bool,
         qwen_output_format: str,
+        wan_aspect_ratio: str,
+        wan_resolution: str,
+        wan_enable_sequential: bool,
+        wan_thinking_mode: bool,
+        seed: int,
+        video_mode: str,
+        video_negative_prompt: str,
+        video_resolution: str,
+        video_duration: int,
+        video_prompt_extend: bool,
         breasts_image: Optional[torch.Tensor] = None,
         dynamic_pose_image: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, str]:
         start = time.time()
         print("[Nxdify] ===== Starting process =====")
 
         if not prompt:
             raise ValueError("Prompt is required")
 
-        api_key = self._resolve_api_key(fal_api_key)
-        print(f"[Nxdify] API key present: {bool(api_key)} length={len(api_key)}")
+        api_key = self._resolve_api_key(kie_api_key)
+        print(f"[Nxdify] Kie.ai API key present: {bool(api_key)} length={len(api_key)}")
 
-        os.environ["FAL_KEY"] = api_key
-        print("[Nxdify] FAL key configured")
+        os.environ["KIE_API_KEY"] = api_key
+        print("[Nxdify] Kie.ai key configured")
 
-        provided: List[Tuple[str, torch.Tensor, bool]] = [
-            ("img1", face_image, True),
-            ("img2", body_image, True),
-        ]
-        if breasts_image is not None:
-            provided.append(("img3", breasts_image, True))
-        if dynamic_pose_image is not None:
-            provided.append(("img4", dynamic_pose_image, False))
+        if generation_type not in self.GENERATION_TYPES:
+            raise ValueError(f"Unknown generation_type: {generation_type}")
+
+        if generation_type == "video":
+            provided: List[Tuple[str, torch.Tensor, bool]] = [("first_frame", face_image, True)]
+            if video_mode == "first_and_last_frame":
+                provided.append(("last_frame", body_image, True))
+        else:
+            provided = [
+                ("img1", face_image, True),
+                ("img2", body_image, True),
+            ]
+            if breasts_image is not None:
+                provided.append(("img3", breasts_image, True))
+            if dynamic_pose_image is not None:
+                provided.append(("img4", dynamic_pose_image, False))
 
         print("[Nxdify] Converting input tensors to bytes...")
         byte_items: List[Tuple[str, bytes, bool]] = []
@@ -483,29 +653,47 @@ class NxdifyNode:
 
         print("[Nxdify] Provided images:", ", ".join([f"{label}={len(b)}B" for label, b, _ in byte_items]))
 
-        print("[Nxdify] Uploading reference images...")
+        print("[Nxdify] Uploading reference images to Kie.ai...")
         image_urls: List[str] = []
         for label, b, use_cache in byte_items:
-            url = await self.upload_ref_with_retry(b, use_cache=use_cache)
+            url = await self.upload_ref_with_retry(b, api_key=api_key, use_cache=use_cache)
             image_urls.append(url)
             print(f"[Nxdify] Uploaded {label} -> {url[:70]}...")
 
+        if generation_type == "video":
+            video_url = await self.generate_video_url(
+                api_key=api_key,
+                image_urls=image_urls,
+                prompt=prompt,
+                video_mode=video_mode,
+                video_negative_prompt=video_negative_prompt,
+                video_resolution=video_resolution,
+                video_duration=video_duration,
+                video_prompt_extend=video_prompt_extend,
+                seed=seed,
+            )
+            print(f"[Nxdify] ===== Total time: {time.time() - start:.2f}s =====")
+            return face_image, video_url
+
         batch = await self.generate_images_batch_tensor(
+            api_key=api_key,
             seedream_version=seedream_version,
             image_urls=image_urls,
             prompt=prompt,
             num_images=num_images,
-            quality=quality,
-            nano_resolution=nano_resolution,
-            nano_aspect_ratio=nano_aspect_ratio,
-            nano_output_format=nano_output_format,
+            seedream_aspect_ratio=seedream_aspect_ratio,
+            seedream_quality=seedream_quality,
             qwen_image_size=qwen_image_size,
-            qwen_use_exact_2048=qwen_use_exact_2048,
             qwen_output_format=qwen_output_format,
+            wan_aspect_ratio=wan_aspect_ratio,
+            wan_resolution=wan_resolution,
+            wan_enable_sequential=wan_enable_sequential,
+            wan_thinking_mode=wan_thinking_mode,
+            seed=seed,
         )
 
         print(f"[Nxdify] ===== Total time: {time.time() - start:.2f}s =====")
-        return batch
+        return batch, ""
 
     def _run_coroutine_in_new_loop(self, coro):
         loop = asyncio.new_event_loop()
@@ -525,33 +713,49 @@ class NxdifyNode:
         face_image: torch.Tensor,
         body_image: torch.Tensor,
         prompt: str,
-        fal_api_key: str,
+        kie_api_key: str,
+        generation_type: str,
         seedream_version: str,
-        quality: str,
         num_images: int,
-        nano_resolution: str,
-        nano_aspect_ratio: str,
-        nano_output_format: str,
+        seedream_aspect_ratio: str,
+        seedream_quality: str,
         qwen_image_size: str,
-        qwen_use_exact_2048: bool,
         qwen_output_format: str,
+        wan_aspect_ratio: str,
+        wan_resolution: str,
+        wan_enable_sequential: bool,
+        wan_thinking_mode: bool,
+        seed: int,
+        video_mode: str,
+        video_negative_prompt: str,
+        video_resolution: str,
+        video_duration: int,
+        video_prompt_extend: bool,
         breasts_image: Optional[torch.Tensor] = None,
         dynamic_pose_image: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor]:
+    ) -> Tuple[torch.Tensor, str]:
         coro = self.process_async(
             face_image=face_image,
             body_image=body_image,
             prompt=prompt,
-            fal_api_key=fal_api_key,
+            kie_api_key=kie_api_key,
+            generation_type=generation_type,
             seedream_version=seedream_version,
-            quality=quality,
             num_images=num_images,
-            nano_resolution=nano_resolution,
-            nano_aspect_ratio=nano_aspect_ratio,
-            nano_output_format=nano_output_format,
+            seedream_aspect_ratio=seedream_aspect_ratio,
+            seedream_quality=seedream_quality,
             qwen_image_size=qwen_image_size,
-            qwen_use_exact_2048=qwen_use_exact_2048,
             qwen_output_format=qwen_output_format,
+            wan_aspect_ratio=wan_aspect_ratio,
+            wan_resolution=wan_resolution,
+            wan_enable_sequential=wan_enable_sequential,
+            wan_thinking_mode=wan_thinking_mode,
+            seed=seed,
+            video_mode=video_mode,
+            video_negative_prompt=video_negative_prompt,
+            video_resolution=video_resolution,
+            video_duration=video_duration,
+            video_prompt_extend=video_prompt_extend,
             breasts_image=breasts_image,
             dynamic_pose_image=dynamic_pose_image,
         )
@@ -563,8 +767,8 @@ class NxdifyNode:
         except RuntimeError:
             result = self._run_coroutine_in_new_loop(coro)
 
-        return (result,)
+        return result
 
 
 NODE_CLASS_MAPPINGS = {"NxdifyNode": NxdifyNode}
-NODE_DISPLAY_NAME_MAPPINGS = {"NxdifyNode": "Nxdify Image Generation"}
+NODE_DISPLAY_NAME_MAPPINGS = {"NxdifyNode": "Nxdify Kie.ai Generation"}
