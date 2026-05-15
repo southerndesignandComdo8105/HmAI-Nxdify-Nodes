@@ -24,7 +24,7 @@ class NxdifyNode:
       - Wan 2.7 Image Pro
       - Wan 2.7 Image to Video
 
-    Uses up to 4 image inputs in ComfyUI, but individual endpoints may enforce stricter limits.
+    Uses 1-4 image inputs in ComfyUI, but individual endpoints may enforce stricter limits.
     Returns a ComfyUI IMAGE batch (BHWC) and a video URL string for video mode.
     """
 
@@ -66,7 +66,6 @@ class NxdifyNode:
         return {
             "required": {
                 "face_image": ("IMAGE",),
-                "body_image": ("IMAGE",),
                 "prompt": ("STRING", {"multiline": True, "default": ""}),
                 "kie_api_key": ("STRING", {"default": "", "password": True}),
                 "generation_type": (cls.GENERATION_TYPES, {"default": "image"}),
@@ -101,6 +100,7 @@ class NxdifyNode:
                 "video_prompt_extend": ("BOOLEAN", {"default": True}),
             },
             "optional": {
+                "body_image": ("IMAGE",),
                 "breasts_image": ("IMAGE",),
                 "dynamic_pose_image": ("IMAGE",),
             },
@@ -593,7 +593,6 @@ class NxdifyNode:
     async def process_async(
         self,
         face_image: torch.Tensor,
-        body_image: torch.Tensor,
         prompt: str,
         kie_api_key: str,
         generation_type: str,
@@ -613,6 +612,7 @@ class NxdifyNode:
         video_resolution: str,
         video_duration: int,
         video_prompt_extend: bool,
+        body_image: Optional[torch.Tensor] = None,
         breasts_image: Optional[torch.Tensor] = None,
         dynamic_pose_image: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, str]:
@@ -634,16 +634,19 @@ class NxdifyNode:
         if generation_type == "video":
             provided: List[Tuple[str, torch.Tensor, bool]] = [("first_frame", face_image, True)]
             if video_mode == "first_and_last_frame":
+                if body_image is None:
+                    raise ValueError("first_and_last_frame video mode requires body_image as the last frame.")
                 provided.append(("last_frame", body_image, True))
         else:
-            provided = [
-                ("img1", face_image, True),
-                ("img2", body_image, True),
+            provided = [("img1", face_image, True)]
+            optional_images = [
+                (body_image, True),
+                (breasts_image, True),
+                (dynamic_pose_image, False),
             ]
-            if breasts_image is not None:
-                provided.append(("img3", breasts_image, True))
-            if dynamic_pose_image is not None:
-                provided.append(("img4", dynamic_pose_image, False))
+            for tens, use_cache in optional_images:
+                if tens is not None:
+                    provided.append((f"img{len(provided) + 1}", tens, use_cache))
 
         print("[Nxdify] Converting input tensors to bytes...")
         byte_items: List[Tuple[str, bytes, bool]] = []
@@ -711,7 +714,6 @@ class NxdifyNode:
     def execute(
         self,
         face_image: torch.Tensor,
-        body_image: torch.Tensor,
         prompt: str,
         kie_api_key: str,
         generation_type: str,
@@ -731,12 +733,12 @@ class NxdifyNode:
         video_resolution: str,
         video_duration: int,
         video_prompt_extend: bool,
+        body_image: Optional[torch.Tensor] = None,
         breasts_image: Optional[torch.Tensor] = None,
         dynamic_pose_image: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, str]:
         coro = self.process_async(
             face_image=face_image,
-            body_image=body_image,
             prompt=prompt,
             kie_api_key=kie_api_key,
             generation_type=generation_type,
@@ -756,6 +758,7 @@ class NxdifyNode:
             video_resolution=video_resolution,
             video_duration=video_duration,
             video_prompt_extend=video_prompt_extend,
+            body_image=body_image,
             breasts_image=breasts_image,
             dynamic_pose_image=dynamic_pose_image,
         )
