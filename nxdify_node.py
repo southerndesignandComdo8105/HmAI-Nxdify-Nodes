@@ -25,7 +25,7 @@ class NxdifyNode:
       - Wan 2.7 Image to Video
 
     Uses 1-4 image inputs in ComfyUI, but individual endpoints may enforce stricter limits.
-    Returns a ComfyUI IMAGE batch (BHWC) and a video URL string for video mode.
+    Returns a ComfyUI IMAGE batch (BHWC), video URL string, and VIDEO output for video mode.
     """
 
     KIE_API_BASE = "https://api.kie.ai"
@@ -106,8 +106,8 @@ class NxdifyNode:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING")
-    RETURN_NAMES = ("image", "video_url")
+    RETURN_TYPES = ("IMAGE", "STRING", "VIDEO")
+    RETURN_NAMES = ("image", "video_url", "video")
     FUNCTION = "execute"
     CATEGORY = "image/generation"
 
@@ -424,6 +424,49 @@ class NxdifyNode:
         tensors = [self.pil_to_tensor(img) for img in pil_images]
         return torch.cat(tensors, dim=0)
 
+    def _video_from_file(self, video_path: str) -> Any:
+        try:
+            from comfy_api.latest import InputImpl
+        except Exception as e:
+            raise RuntimeError(
+                "ComfyUI VIDEO output requires comfy_api.latest. Update ComfyUI or use video_url instead."
+            ) from e
+
+        return InputImpl.VideoFromFile(video_path)
+
+    def _get_video_download_path(self, video_url: str) -> str:
+        try:
+            import folder_paths
+
+            base_dir = folder_paths.get_temp_directory()
+        except Exception:
+            base_dir = os.path.join(os.getcwd(), "temp")
+
+        video_dir = os.path.join(base_dir, "nxdify")
+        os.makedirs(video_dir, exist_ok=True)
+        digest = hashlib.sha256(video_url.encode("utf-8")).hexdigest()[:16]
+        return os.path.join(video_dir, f"wan_video_{int(time.time())}_{digest}.mp4")
+
+    async def _download_video_to_file(self, video_url: str) -> str:
+        video_path = self._get_video_download_path(video_url)
+        timeout = aiohttp.ClientTimeout(total=10 * 60)
+
+        print(f"[Nxdify] Downloading video from Kie.ai: {video_url}")
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(video_url) as resp:
+                if resp.status != 200:
+                    raise ValueError(f"Failed to download video: HTTP {resp.status}")
+
+                with open(video_path, "wb") as f:
+                    while True:
+                        chunk = await resp.content.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+
+        print(f"[Nxdify] Video downloaded to: {video_path}")
+        return video_path
+
     async def _run_repeated_image_tasks(
         self,
         api_key: str,
@@ -615,7 +658,7 @@ class NxdifyNode:
         body_image: Optional[torch.Tensor] = None,
         breasts_image: Optional[torch.Tensor] = None,
         dynamic_pose_image: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, str]:
+    ) -> Tuple[torch.Tensor, str, Any]:
         start = time.time()
         print("[Nxdify] ===== Starting process =====")
 
@@ -675,8 +718,10 @@ class NxdifyNode:
                 video_prompt_extend=video_prompt_extend,
                 seed=seed,
             )
+            video_path = await self._download_video_to_file(video_url)
+            video = self._video_from_file(video_path)
             print(f"[Nxdify] ===== Total time: {time.time() - start:.2f}s =====")
-            return face_image, video_url
+            return face_image, video_url, video
 
         batch = await self.generate_images_batch_tensor(
             api_key=api_key,
@@ -696,7 +741,7 @@ class NxdifyNode:
         )
 
         print(f"[Nxdify] ===== Total time: {time.time() - start:.2f}s =====")
-        return batch, ""
+        return batch, "", None
 
     def _run_coroutine_in_new_loop(self, coro):
         loop = asyncio.new_event_loop()
@@ -736,7 +781,7 @@ class NxdifyNode:
         body_image: Optional[torch.Tensor] = None,
         breasts_image: Optional[torch.Tensor] = None,
         dynamic_pose_image: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, str]:
+    ) -> Tuple[torch.Tensor, str, Any]:
         coro = self.process_async(
             face_image=face_image,
             prompt=prompt,
