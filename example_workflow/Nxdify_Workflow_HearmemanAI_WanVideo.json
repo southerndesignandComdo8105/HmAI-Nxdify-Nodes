@@ -225,7 +225,8 @@
         "blurry, flicker, low quality, distorted",
         "1080p",
         5,
-        true
+        true,
+        ""
       ],
       "color": "#223",
       "bgcolor": "#335"
