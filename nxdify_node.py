@@ -334,6 +334,9 @@ class NxdifyNode:
                     return data
 
                 if state in {"fail", "failed", "error"}:
+                    if self._extract_urls_from_result(data):
+                        print(f"[Nxdify] Kie.ai task {task_id} failed but returned partial URL(s); keeping them.")
+                        return data
                     fail_msg = data.get("failMsg") or data.get("error") or payload.get("msg") or "unknown error"
                     raise ValueError(f"Kie.ai task failed: {fail_msg}")
 
@@ -419,7 +422,23 @@ class NxdifyNode:
         connector = aiohttp.TCPConnector(limit=self.MAX_CONCURRENT_DOWNLOADS)
         async with aiohttp.ClientSession(connector=connector) as session:
             tasks = [self._download_one_image(session, url, i) for i, url in enumerate(urls)]
-            pil_images = await asyncio.gather(*tasks)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        pil_images = []
+        failures = []
+        for idx, result in enumerate(results):
+            if isinstance(result, Exception):
+                failures.append(f"download {idx + 1}: {result}")
+                continue
+            pil_images.append(result)
+
+        if failures:
+            print("[Nxdify] Some generated images failed to download:")
+            for failure in failures:
+                print(f"[Nxdify]   - {failure}")
+
+        if not pil_images:
+            raise ValueError("All generated image downloads failed.")
 
         tensors = [self.pil_to_tensor(img) for img in pil_images]
         return torch.cat(tensors, dim=0)
@@ -477,11 +496,30 @@ class NxdifyNode:
             self._run_kie_task(api_key, model, input_payload, self.TASK_TIMEOUT_SECONDS)
             for input_payload in input_payloads
         ]
-        results = await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
         urls: List[str] = []
-        for result in results:
-            urls.extend(self._extract_urls_from_result(result))
+        failures = []
+        for idx, result in enumerate(results):
+            if isinstance(result, Exception):
+                failures.append(f"task {idx + 1}: {result}")
+                continue
+
+            result_urls = self._extract_urls_from_result(result)
+            if not result_urls:
+                failures.append(f"task {idx + 1}: no image URLs returned")
+                continue
+
+            urls.extend(result_urls)
+
+        if failures:
+            print("[Nxdify] Some image generation tasks failed:")
+            for failure in failures:
+                print(f"[Nxdify]   - {failure}")
+
+        if not urls:
+            raise ValueError("All image generation tasks failed: " + "; ".join(failures))
+
         return urls
 
     async def generate_images_batch_tensor(
