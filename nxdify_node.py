@@ -2,7 +2,6 @@ import io
 import os
 import time
 import json
-import base64
 import hashlib
 import asyncio
 import concurrent.futures
@@ -16,7 +15,7 @@ import aiohttp
 
 class NxdifyNode:
     """
-    ComfyUI node for multi-image edit and image-to-video using Kie.ai and BytePlus APIs.
+    ComfyUI node for multi-image edit and image-to-video using Kie.ai Market APIs.
 
     Supports:
       - Seedream 4.5 Edit
@@ -24,7 +23,6 @@ class NxdifyNode:
       - Qwen2 Image Edit
       - Wan 2.7 Image Pro
       - Wan 2.7 Image to Video
-      - BytePlus Seedream 4.5
 
     Uses 1-4 image inputs in ComfyUI, but individual endpoints may enforce stricter limits.
     Returns a ComfyUI IMAGE batch (BHWC), video URL string, and VIDEO output for video mode.
@@ -35,14 +33,12 @@ class NxdifyNode:
     CREATE_TASK_URL = f"{KIE_API_BASE}/api/v1/jobs/createTask"
     TASK_STATUS_URL = f"{KIE_API_BASE}/api/v1/jobs/recordInfo"
     FILE_UPLOAD_URL = f"{KIE_UPLOAD_BASE}/api/file-stream-upload"
-    BYTEPLUS_IMAGES_URL = "https://ark.ap-southeast.bytepluses.com/api/v3/images/generations"
 
     MODEL_SEEDREAM_45 = "seedream/4.5-edit"
     MODEL_SEEDREAM_5 = "seedream/5-lite-image-to-image"
     MODEL_QWEN2_IMAGE_EDIT = "qwen2/image-edit"
     MODEL_WAN_IMAGE_PRO = "wan/2-7-image-pro"
     MODEL_WAN_IMAGE_TO_VIDEO = "wan/2-7-image-to-video"
-    MODEL_BYTEPLUS_SEEDREAM_45 = "seedream-4-5-251128"
 
     GENERATION_TYPES = ["image", "video"]
 
@@ -50,7 +46,6 @@ class NxdifyNode:
     VERSION_OPTIONS = [
         "v5_lite",
         "v4.5",
-        "seedream45_uncencored",
         "qwen2_image_edit",
         "wan_2.7_image_pro",
     ]
@@ -103,9 +98,6 @@ class NxdifyNode:
                 "video_resolution": (cls.VIDEO_RESOLUTIONS, {"default": "1080p"}),
                 "video_duration": ("INT", {"default": 5, "min": 2, "max": 15, "step": 1}),
                 "video_prompt_extend": ("BOOLEAN", {"default": True}),
-
-                # BytePlus ModelArk Seedream 4.5
-                "byteplus_api_key": ("STRING", {"default": "", "password": True}),
             },
             "optional": {
                 "body_image": ("IMAGE",),
@@ -210,24 +202,6 @@ class NxdifyNode:
 
         return key
 
-    def _resolve_byteplus_api_key(self, byteplus_api_key: str) -> str:
-        """
-        Prefer the workflow key if present; otherwise fall back to BytePlus/Ark env keys.
-        """
-        key = (byteplus_api_key or "").strip()
-        if not key:
-            key = (
-                os.getenv("ARK_API_KEY")
-                or os.getenv("BYTEPLUS_ARK_API_KEY")
-                or os.getenv("BYTEPLUS_API_KEY")
-                or ""
-            ).strip()
-
-        if not key:
-            raise ValueError("BytePlus ModelArk API key is required for seedream45_uncencored")
-
-        return key
-
     def _auth_headers(self, api_key: str) -> Dict[str, str]:
         return {"Authorization": f"Bearer {api_key}"}
 
@@ -236,7 +210,6 @@ class NxdifyNode:
         legacy_map = {
             "qwen_image_2_pro_edit": "qwen2_image_edit",
             "qwen_image_edit": "qwen2_image_edit",
-            "seedream45_uncensored": "seedream45_uncencored",
         }
         if version in legacy_map:
             version = legacy_map[version]
@@ -450,84 +423,6 @@ class NxdifyNode:
 
         tensors = [self.pil_to_tensor(img) for img in pil_images]
         return torch.cat(tensors, dim=0)
-
-    def _image_bytes_to_data_url(self, image_bytes: bytes) -> str:
-        encoded = base64.b64encode(image_bytes).decode("ascii")
-        return f"data:image/jpeg;base64,{encoded}"
-
-    def _build_byteplus_size(self, aspect_ratio: str, quality: str) -> str:
-        if quality == "high":
-            # BytePlus accepts the resolution tier directly; use the prompt to steer aspect ratio.
-            return "4K"
-
-        size_by_ratio = {
-            "1:1": "2048x2048",
-            "4:3": "2304x1728",
-            "3:4": "1728x2304",
-            "16:9": "2560x1440",
-            "9:16": "1440x2560",
-            "3:2": "2496x1664",
-            "2:3": "1664x2496",
-            "21:9": "3024x1296",
-        }
-        return size_by_ratio.get(aspect_ratio, "2048x2048")
-
-    def _build_byteplus_prompt(self, prompt: str, aspect_ratio: str, quality: str) -> str:
-        if quality == "high":
-            return f"{prompt}\n\nOutput aspect ratio: {aspect_ratio}."
-        return prompt
-
-    async def generate_byteplus_seedream_batch_tensor(
-        self,
-        api_key: str,
-        image_data_urls: List[str],
-        prompt: str,
-        num_images: int,
-        aspect_ratio: str,
-        quality: str,
-        seed: int,
-    ) -> torch.Tensor:
-        if len(image_data_urls) + num_images > 15:
-            raise ValueError(
-                "BytePlus Seedream 4.5 supports at most 15 total input and generated images. "
-                f"Got {len(image_data_urls)} input image(s) and requested {num_images} output image(s)."
-            )
-
-        payload: Dict[str, Any] = {
-            "model": self.MODEL_BYTEPLUS_SEEDREAM_45,
-            "prompt": self._build_byteplus_prompt(prompt, aspect_ratio, quality),
-            "image": image_data_urls[0] if len(image_data_urls) == 1 else image_data_urls,
-            "size": self._build_byteplus_size(aspect_ratio, quality),
-            "response_format": "url",
-            "watermark": False,
-        }
-        if seed > 0:
-            payload["seed"] = seed
-        if num_images > 1:
-            payload["sequential_image_generation"] = "auto"
-            payload["sequential_image_generation_options"] = {"max_images": num_images}
-
-        headers = self._auth_headers(api_key)
-        headers["Content-Type"] = "application/json"
-        timeout = aiohttp.ClientTimeout(total=self.TASK_TIMEOUT_SECONDS)
-
-        print("[Nxdify] Submitting BytePlus Seedream 4.5 task")
-        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-            async with session.post(self.BYTEPLUS_IMAGES_URL, json=payload) as resp:
-                result = await resp.json(content_type=None)
-
-        if "error" in result:
-            raise ValueError(f"BytePlus Seedream 4.5 failed: {result['error']}")
-
-        urls = self._extract_urls_from_result(result)
-        if not urls:
-            raise ValueError(f"No image URLs found in BytePlus result. Keys: {list(result.keys())}")
-
-        urls = urls[:num_images]
-        print(f"[Nxdify] BytePlus returned {len(urls)} image URL(s). Downloading...")
-        batch = await self._download_batch(urls)
-        print(f"[Nxdify] Returning BytePlus batch tensor: shape={tuple(batch.shape)}")
-        return batch
 
     def _video_from_file(self, video_path: str) -> Any:
         try:
@@ -760,7 +655,6 @@ class NxdifyNode:
         video_resolution: str,
         video_duration: int,
         video_prompt_extend: bool,
-        byteplus_api_key: str,
         body_image: Optional[torch.Tensor] = None,
         breasts_image: Optional[torch.Tensor] = None,
         dynamic_pose_image: Optional[torch.Tensor] = None,
@@ -771,17 +665,16 @@ class NxdifyNode:
         if not prompt:
             raise ValueError("Prompt is required")
 
+        api_key = self._resolve_api_key(kie_api_key)
+        print(f"[Nxdify] Kie.ai API key present: {bool(api_key)} length={len(api_key)}")
+
+        os.environ["KIE_API_KEY"] = api_key
+        print("[Nxdify] Kie.ai key configured")
+
         if generation_type not in self.GENERATION_TYPES:
             raise ValueError(f"Unknown generation_type: {generation_type}")
 
-        seedream_version = self._normalize_selector(seedream_version)
-
         if generation_type == "video":
-            api_key = self._resolve_api_key(kie_api_key)
-            print(f"[Nxdify] Kie.ai API key present: {bool(api_key)} length={len(api_key)}")
-            os.environ["KIE_API_KEY"] = api_key
-            print("[Nxdify] Kie.ai key configured")
-
             provided: List[Tuple[str, torch.Tensor, bool]] = [("first_frame", face_image, True)]
             if video_mode == "first_and_last_frame":
                 if body_image is None:
@@ -805,28 +698,6 @@ class NxdifyNode:
             byte_items.append((label, b, use_cache))
 
         print("[Nxdify] Provided images:", ", ".join([f"{label}={len(b)}B" for label, b, _ in byte_items]))
-
-        if generation_type == "image" and seedream_version == "seedream45_uncencored":
-            api_key = self._resolve_byteplus_api_key(byteplus_api_key)
-            print(f"[Nxdify] BytePlus API key present: {bool(api_key)} length={len(api_key)}")
-            os.environ["ARK_API_KEY"] = api_key
-            image_data_urls = [self._image_bytes_to_data_url(b) for _, b, _ in byte_items]
-            batch = await self.generate_byteplus_seedream_batch_tensor(
-                api_key=api_key,
-                image_data_urls=image_data_urls,
-                prompt=prompt,
-                num_images=num_images,
-                aspect_ratio=seedream_aspect_ratio,
-                quality=seedream_quality,
-                seed=seed,
-            )
-            print(f"[Nxdify] ===== Total time: {time.time() - start:.2f}s =====")
-            return batch, "", None
-
-        api_key = self._resolve_api_key(kie_api_key)
-        print(f"[Nxdify] Kie.ai API key present: {bool(api_key)} length={len(api_key)}")
-        os.environ["KIE_API_KEY"] = api_key
-        print("[Nxdify] Kie.ai key configured")
 
         print("[Nxdify] Uploading reference images to Kie.ai...")
         image_urls: List[str] = []
@@ -907,7 +778,6 @@ class NxdifyNode:
         video_resolution: str,
         video_duration: int,
         video_prompt_extend: bool,
-        byteplus_api_key: str,
         body_image: Optional[torch.Tensor] = None,
         breasts_image: Optional[torch.Tensor] = None,
         dynamic_pose_image: Optional[torch.Tensor] = None,
@@ -916,7 +786,6 @@ class NxdifyNode:
             face_image=face_image,
             prompt=prompt,
             kie_api_key=kie_api_key,
-            byteplus_api_key=byteplus_api_key,
             generation_type=generation_type,
             seedream_version=seedream_version,
             num_images=num_images,
