@@ -138,8 +138,8 @@
         438.1022243022
       ],
       "size": [
-        432.1643359374998,
-        196
+        520,
+        640
       ],
       "flags": {},
       "order": 7,
@@ -149,6 +149,22 @@
           "name": "face_image",
           "type": "IMAGE",
           "link": 4
+        },
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "prompt"
+          },
+          "link": 9
+        },
+        {
+          "name": "kie_api_key",
+          "type": "STRING",
+          "widget": {
+            "name": "kie_api_key"
+          },
+          "link": 8
         },
         {
           "name": "body_image",
@@ -164,22 +180,6 @@
           "name": "dynamic_pose_image",
           "type": "IMAGE",
           "link": 1
-        },
-        {
-          "name": "prompt",
-          "type": "STRING",
-          "widget": {
-            "name": "prompt"
-          },
-          "link": 9
-        },
-        {
-          "name": "fal_api_key",
-          "type": "STRING",
-          "widget": {
-            "name": "fal_api_key"
-          },
-          "link": 8
         }
       ],
       "outputs": [
@@ -189,6 +189,16 @@
           "links": [
             6
           ]
+        },
+        {
+          "name": "video_url",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": null
         }
       ],
       "properties": {
@@ -197,7 +207,26 @@
       "widgets_values": [
         "Your highest priority and a non negotiable: the final image should be a naturally lit replication of the fourth image, completely nude with subtle shadows of the person shown in the first and second images with the breasts shown in the third image and the exact pose/environment shown in the fourth image",
         "",
-        "auto_4K"
+        "image",
+        "v4.5",
+        4,
+        "1:1",
+        "basic",
+        "16:9",
+        "png",
+        "auto",
+        "2K",
+        false,
+        false,
+        0,
+        "first_frame",
+        "blurry, flicker, low quality, distorted",
+        "1080p",
+        5,
+        true,
+        "1:1",
+        "1K",
+        "png"
       ],
       "color": "#223",
       "bgcolor": "#335"
@@ -357,14 +386,14 @@
           ]
         }
       ],
-      "title": "FAL API KEY",
+      "title": "KIE API KEY",
       "properties": {
         "cnr_id": "comfy-core",
         "ver": "0.5.1",
         "Node name for S&R": "PrimitiveStringMultiline"
       },
       "widgets_values": [
-        "YOUR FAL API KEY HERE"
+        "YOUR KIE API KEY HERE"
       ],
       "color": "#232",
       "bgcolor": "#353"
@@ -376,7 +405,7 @@
       5,
       0,
       1,
-      3,
+      5,
       "IMAGE"
     ],
     [
@@ -384,7 +413,7 @@
       4,
       0,
       1,
-      2,
+      4,
       "IMAGE"
     ],
     [
@@ -392,7 +421,7 @@
       3,
       0,
       1,
-      1,
+      3,
       "IMAGE"
     ],
     [
@@ -416,7 +445,7 @@
       8,
       0,
       1,
-      5,
+      2,
       "STRING"
     ],
     [
@@ -424,7 +453,7 @@
       10,
       0,
       1,
-      4,
+      1,
       "STRING"
     ]
   ],

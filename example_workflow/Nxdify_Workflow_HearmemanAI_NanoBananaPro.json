@@ -1,8 +1,8 @@
 {
   "id": "fe08b202-d3ef-4ee9-9b01-75d3f7632f71",
   "revision": 0,
-  "last_node_id": 11,
-  "last_link_id": 10,
+  "last_node_id": 10,
+  "last_link_id": 9,
   "nodes": [
     {
       "id": 4,
@@ -198,9 +198,7 @@
         {
           "name": "video",
           "type": "VIDEO",
-          "links": [
-            10
-          ]
+          "links": null
         }
       ],
       "properties": {
@@ -209,8 +207,8 @@
       "widgets_values": [
         "Your highest priority and a non negotiable: the final image should be a naturally lit replication of the fourth image, completely nude with subtle shadows of the person shown in the first and second images with the breasts shown in the third image and the exact pose/environment shown in the fourth image",
         "",
-        "video",
-        "v4.5",
+        "image",
+        "nano_banana_pro",
         4,
         "1:1",
         "basic",
@@ -399,39 +397,6 @@
       ],
       "color": "#232",
       "bgcolor": "#353"
-    },
-    {
-      "id": 11,
-      "type": "SaveVideo",
-      "pos": [
-        1314.4764685724604,
-        702.0
-      ],
-      "size": [
-        360,
-        120
-      ],
-      "flags": {},
-      "order": 9,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "video",
-          "type": "VIDEO",
-          "link": 10
-        }
-      ],
-      "outputs": [],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.5.1",
-        "Node name for S&R": "SaveVideo"
-      },
-      "widgets_values": [
-        "video/Nxdify_Wan",
-        "auto",
-        "auto"
-      ]
     }
   ],
   "links": [
@@ -490,14 +455,6 @@
       1,
       1,
       "STRING"
-    ],
-    [
-      10,
-      1,
-      2,
-      11,
-      0,
-      "VIDEO"
     ]
   ],
   "groups": [

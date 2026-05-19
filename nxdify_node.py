@@ -21,6 +21,7 @@ class NxdifyNode:
       - Seedream 4.5 Edit
       - Seedream 5.0 Lite Image to Image
       - Qwen2 Image Edit
+      - Nano Banana Pro
       - Wan 2.7 Image Pro
       - Wan 2.7 Image to Video
 
@@ -37,6 +38,7 @@ class NxdifyNode:
     MODEL_SEEDREAM_45 = "seedream/4.5-edit"
     MODEL_SEEDREAM_5 = "seedream/5-lite-image-to-image"
     MODEL_QWEN2_IMAGE_EDIT = "qwen2/image-edit"
+    MODEL_NANO_BANANA_PRO = "nano-banana-pro"
     MODEL_WAN_IMAGE_PRO = "wan/2-7-image-pro"
     MODEL_WAN_IMAGE_TO_VIDEO = "wan/2-7-image-to-video"
 
@@ -47,12 +49,17 @@ class NxdifyNode:
         "v5_lite",
         "v4.5",
         "qwen2_image_edit",
+        "nano_banana_pro",
         "wan_2.7_image_pro",
     ]
 
     ASPECT_RATIOS = ["1:1", "4:3", "3:4", "16:9", "9:16", "2:3", "3:2", "21:9"]
     SEEDREAM_QUALITIES = ["basic", "high"]
     QWEN_OUTPUT_FORMATS = ["png", "jpeg"]
+
+    NANO_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9", "auto"]
+    NANO_RESOLUTIONS = ["1K", "2K", "4K"]
+    NANO_OUTPUT_FORMATS = ["png", "jpg"]
 
     WAN_ASPECT_RATIOS = ["auto", "1:1", "16:9", "4:3", "21:9", "3:4", "9:16", "8:1", "1:8"]
     WAN_RESOLUTIONS = ["1K", "2K", "4K"]
@@ -98,6 +105,11 @@ class NxdifyNode:
                 "video_resolution": (cls.VIDEO_RESOLUTIONS, {"default": "1080p"}),
                 "video_duration": ("INT", {"default": 5, "min": 2, "max": 15, "step": 1}),
                 "video_prompt_extend": ("BOOLEAN", {"default": True}),
+
+                # Nano Banana Pro
+                "nano_aspect_ratio": (cls.NANO_ASPECT_RATIOS, {"default": "1:1"}),
+                "nano_resolution": (cls.NANO_RESOLUTIONS, {"default": "1K"}),
+                "nano_output_format": (cls.NANO_OUTPUT_FORMATS, {"default": "png"}),
             },
             "optional": {
                 "body_image": ("IMAGE",),
@@ -214,7 +226,7 @@ class NxdifyNode:
         if version in legacy_map:
             version = legacy_map[version]
 
-        if version in {"nano_banana_pro", "flux", "flux_kontext"}:
+        if version in {"flux", "flux_kontext"}:
             raise ValueError(f"Model '{seedream_version}' was removed from this Kie.ai version of the node.")
 
         if version not in self.VERSION_OPTIONS:
@@ -537,6 +549,9 @@ class NxdifyNode:
         wan_resolution: str,
         wan_enable_sequential: bool,
         wan_thinking_mode: bool,
+        nano_aspect_ratio: str,
+        nano_resolution: str,
+        nano_output_format: str,
         seed: int,
     ) -> torch.Tensor:
         seedream_version = self._normalize_selector(seedream_version)
@@ -583,6 +598,17 @@ class NxdifyNode:
                     }
                 )
             urls = await self._run_repeated_image_tasks(api_key, self.MODEL_QWEN2_IMAGE_EDIT, input_payloads)
+
+        elif seedream_version == "nano_banana_pro":
+            input_payload = {
+                "prompt": prompt,
+                "image_input": image_urls,
+                "aspect_ratio": nano_aspect_ratio,
+                "resolution": nano_resolution,
+                "output_format": nano_output_format,
+            }
+            input_payloads = [dict(input_payload) for _ in range(num_images)]
+            urls = await self._run_repeated_image_tasks(api_key, self.MODEL_NANO_BANANA_PRO, input_payloads)
 
         elif seedream_version == "wan_2.7_image_pro":
             if not wan_enable_sequential and num_images > 4:
@@ -693,6 +719,9 @@ class NxdifyNode:
         video_resolution: str,
         video_duration: int,
         video_prompt_extend: bool,
+        nano_aspect_ratio: str,
+        nano_resolution: str,
+        nano_output_format: str,
         body_image: Optional[torch.Tensor] = None,
         breasts_image: Optional[torch.Tensor] = None,
         dynamic_pose_image: Optional[torch.Tensor] = None,
@@ -775,6 +804,9 @@ class NxdifyNode:
             wan_resolution=wan_resolution,
             wan_enable_sequential=wan_enable_sequential,
             wan_thinking_mode=wan_thinking_mode,
+            nano_aspect_ratio=nano_aspect_ratio,
+            nano_resolution=nano_resolution,
+            nano_output_format=nano_output_format,
             seed=seed,
         )
 
@@ -816,6 +848,9 @@ class NxdifyNode:
         video_resolution: str,
         video_duration: int,
         video_prompt_extend: bool,
+        nano_aspect_ratio: str,
+        nano_resolution: str,
+        nano_output_format: str,
         body_image: Optional[torch.Tensor] = None,
         breasts_image: Optional[torch.Tensor] = None,
         dynamic_pose_image: Optional[torch.Tensor] = None,
@@ -841,6 +876,9 @@ class NxdifyNode:
             video_resolution=video_resolution,
             video_duration=video_duration,
             video_prompt_extend=video_prompt_extend,
+            nano_aspect_ratio=nano_aspect_ratio,
+            nano_resolution=nano_resolution,
+            nano_output_format=nano_output_format,
             body_image=body_image,
             breasts_image=breasts_image,
             dynamic_pose_image=dynamic_pose_image,
