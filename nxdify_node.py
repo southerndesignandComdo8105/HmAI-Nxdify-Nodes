@@ -275,7 +275,7 @@ class NxdifyNode:
                         return path, data
             return None, None
 
-        for method_name in ("get_file_path", "get_path", "get_local_file_path", "get_local_filepath"):
+        for method_name in ("get_stream_source", "get_file_path", "get_path", "get_local_file_path", "get_local_filepath"):
             method = getattr(value, method_name, None)
             if callable(method):
                 try:
