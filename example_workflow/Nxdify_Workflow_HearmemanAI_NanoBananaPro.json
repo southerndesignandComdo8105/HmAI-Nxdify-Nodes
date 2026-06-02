@@ -139,7 +139,7 @@
       ],
       "size": [
         520,
-        640
+        700
       ],
       "flags": {},
       "order": 7,
@@ -180,6 +180,11 @@
           "name": "dynamic_pose_image",
           "type": "IMAGE",
           "link": 1
+        },
+        {
+          "name": "source_video",
+          "type": "VIDEO",
+          "link": null
         }
       ],
       "outputs": [
@@ -222,6 +227,7 @@
         "first_frame",
         "blurry, flicker, low quality, distorted",
         "1080p",
+        "16:9",
         5,
         true,
         "1:1",

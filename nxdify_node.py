@@ -5,6 +5,7 @@ import json
 import hashlib
 import asyncio
 import concurrent.futures
+import mimetypes
 from typing import Tuple, Dict, List, Optional, Any
 
 from PIL import Image
@@ -15,7 +16,7 @@ import aiohttp
 
 class NxdifyNode:
     """
-    ComfyUI node for multi-image edit and image-to-video using Kie.ai Market APIs.
+    ComfyUI node for multi-image edit and Wan video generation using Kie.ai Market APIs.
 
     Supports:
       - Seedream 4.5 Edit
@@ -24,8 +25,10 @@ class NxdifyNode:
       - Nano Banana Pro
       - Wan 2.7 Image Pro
       - Wan 2.7 Image to Video
+      - Wan 2.7 Video Edit
+      - Wan 2.7 Reference to Video
 
-    Uses 1-4 image inputs in ComfyUI, but individual endpoints may enforce stricter limits.
+    Uses 1-4 image inputs plus an optional VIDEO input in ComfyUI, but individual endpoints may enforce stricter limits.
     Returns a ComfyUI IMAGE batch (BHWC), video URL string, and VIDEO output for video mode.
     """
 
@@ -41,6 +44,8 @@ class NxdifyNode:
     MODEL_NANO_BANANA_PRO = "nano-banana-pro"
     MODEL_WAN_IMAGE_PRO = "wan/2-7-image-pro"
     MODEL_WAN_IMAGE_TO_VIDEO = "wan/2-7-image-to-video"
+    MODEL_WAN_VIDEO_EDIT = "wan/2-7-videoedit"
+    MODEL_WAN_REFERENCE_TO_VIDEO = "wan/2-7-r2v"
 
     GENERATION_TYPES = ["image", "video"]
 
@@ -64,8 +69,9 @@ class NxdifyNode:
     WAN_ASPECT_RATIOS = ["auto", "1:1", "16:9", "4:3", "21:9", "3:4", "9:16", "8:1", "1:8"]
     WAN_RESOLUTIONS = ["1K", "2K", "4K"]
 
-    VIDEO_MODES = ["first_frame", "first_and_last_frame"]
+    VIDEO_MODES = ["first_frame", "first_and_last_frame", "video_edit", "reference_to_video"]
     VIDEO_RESOLUTIONS = ["720p", "1080p"]
+    VIDEO_ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -103,7 +109,8 @@ class NxdifyNode:
                     {"multiline": True, "default": "blurry, flicker, low quality, distorted"},
                 ),
                 "video_resolution": (cls.VIDEO_RESOLUTIONS, {"default": "1080p"}),
-                "video_duration": ("INT", {"default": 5, "min": 2, "max": 15, "step": 1}),
+                "video_aspect_ratio": (cls.VIDEO_ASPECT_RATIOS, {"default": "16:9"}),
+                "video_duration": ("INT", {"default": 5, "min": 0, "max": 15, "step": 1}),
                 "video_prompt_extend": ("BOOLEAN", {"default": True}),
 
                 # Nano Banana Pro
@@ -115,6 +122,7 @@ class NxdifyNode:
                 "body_image": ("IMAGE",),
                 "breasts_image": ("IMAGE",),
                 "dynamic_pose_image": ("IMAGE",),
+                "source_video": ("VIDEO",),
             },
         }
 
@@ -233,6 +241,139 @@ class NxdifyNode:
             raise ValueError(f"Unknown version/model: {seedream_version}")
 
         return version
+
+    def _resolve_video_input_value(self, value: Any, seen: Optional[set] = None) -> Tuple[Optional[str], Optional[bytes]]:
+        if value is None:
+            return None, None
+
+        if seen is None:
+            seen = set()
+
+        obj_id = id(value)
+        if obj_id in seen:
+            return None, None
+        seen.add(obj_id)
+
+        if isinstance(value, os.PathLike):
+            value = os.fspath(value)
+
+        if isinstance(value, str):
+            if value.startswith(("http://", "https://")):
+                return value, None
+            if os.path.exists(value):
+                return os.path.abspath(value), None
+            return None, None
+
+        if isinstance(value, bytes):
+            return None, value
+
+        if isinstance(value, dict):
+            for key in ("video_path", "file_path", "path", "filepath", "filename", "file", "video", "value"):
+                if key in value:
+                    path, data = self._resolve_video_input_value(value[key], seen)
+                    if path or data:
+                        return path, data
+            return None, None
+
+        for method_name in ("get_file_path", "get_path", "get_local_file_path", "get_local_filepath"):
+            method = getattr(value, method_name, None)
+            if callable(method):
+                try:
+                    path, data = self._resolve_video_input_value(method(), seen)
+                    if path or data:
+                        return path, data
+                except Exception:
+                    pass
+
+        for attr_name in ("video_path", "file_path", "path", "filepath", "filename", "name", "file", "video", "value"):
+            attr = getattr(value, attr_name, None)
+            if attr is not None:
+                path, data = self._resolve_video_input_value(attr, seen)
+                if path or data:
+                    return path, data
+
+        if hasattr(value, "getvalue"):
+            try:
+                return None, value.getvalue()
+            except Exception:
+                pass
+
+        if hasattr(value, "read"):
+            pos = None
+            try:
+                if hasattr(value, "tell"):
+                    pos = value.tell()
+                data = value.read()
+                if pos is not None and hasattr(value, "seek"):
+                    value.seek(pos)
+                if isinstance(data, bytes):
+                    return None, data
+            except Exception:
+                pass
+
+        return None, None
+
+    async def upload_video_input_with_retry(
+        self,
+        source_video: Any,
+        api_key: str,
+        max_attempts: int = 3,
+    ) -> str:
+        path, inline_bytes = self._resolve_video_input_value(source_video)
+        if path and path.startswith(("http://", "https://")):
+            print(f"[Nxdify] Using remote source video URL: {path}")
+            return path
+
+        if path:
+            with open(path, "rb") as f:
+                file_bytes = f.read()
+            file_name = os.path.basename(path)
+        elif inline_bytes is not None:
+            file_bytes = inline_bytes
+            file_name = f"nxdify-input-video-{int(time.time())}.mp4"
+        else:
+            raise ValueError(
+                "Could not resolve source_video to a file path or readable video stream. "
+                "Use ComfyUI's built-in LoadVideo node or provide a direct video URL."
+            )
+
+        guessed_type = mimetypes.guess_type(file_name)[0] or "video/mp4"
+        headers = self._auth_headers(api_key)
+        timeout = aiohttp.ClientTimeout(total=10 * 60)
+
+        for attempt in range(max_attempts):
+            try:
+                print(f"[Nxdify] Uploading source video to Kie.ai (attempt {attempt + 1}/{max_attempts})...")
+                form = aiohttp.FormData()
+                form.add_field("file", file_bytes, filename=file_name, content_type=guessed_type)
+                form.add_field("uploadPath", "videos/nxdify")
+                form.add_field("fileName", file_name)
+
+                async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+                    async with session.post(self.FILE_UPLOAD_URL, data=form) as resp:
+                        payload = await resp.json(content_type=None)
+
+                if payload.get("code") != 200 or payload.get("success") is False:
+                    raise ValueError(f"Kie.ai video upload failed: {payload}")
+
+                data = payload.get("data") or {}
+                url = data.get("downloadUrl") or data.get("fileUrl") or data.get("url")
+                if not url:
+                    raise ValueError(f"No upload URL found in Kie.ai video response: {payload}")
+
+                print(f"[Nxdify] Source video upload successful: {url}")
+                return url
+
+            except Exception as e:
+                if attempt == max_attempts - 1:
+                    raise
+                err = str(e).lower()
+                if "timeout" in err or "408" in err or "429" in err or "500" in err:
+                    backoff = 2 + attempt * 3
+                    print(f"[Nxdify] Source video upload issue; retry in {backoff}s: {e}")
+                    await asyncio.sleep(backoff)
+                    continue
+                raise
 
     async def upload_ref_with_retry(
         self,
@@ -657,36 +798,87 @@ class NxdifyNode:
         self,
         api_key: str,
         image_urls: List[str],
+        source_video_url: Optional[str],
         prompt: str,
         video_mode: str,
         video_negative_prompt: str,
         video_resolution: str,
+        video_aspect_ratio: str,
         video_duration: int,
         video_prompt_extend: bool,
         seed: int,
     ) -> str:
-        if not image_urls:
-            raise ValueError("Wan 2.7 Image to Video requires at least one input image.")
-        if video_mode == "first_and_last_frame" and len(image_urls) < 2:
-            raise ValueError("first_and_last_frame video mode requires two input images.")
+        if video_mode == "video_edit":
+            if not source_video_url:
+                raise ValueError("video_edit requires a connected source_video input.")
+            if not image_urls:
+                raise ValueError("video_edit requires one reference image.")
+            if video_duration < 0:
+                raise ValueError("video_edit duration must be 0 or greater.")
 
-        input_payload = {
-            "prompt": prompt,
-            "negative_prompt": video_negative_prompt,
-            "first_frame_url": image_urls[0],
-            "resolution": video_resolution,
-            "duration": video_duration,
-            "prompt_extend": video_prompt_extend,
-            "watermark": False,
-            "seed": seed,
-            "nsfw_checker": False,
-        }
-        if video_mode == "first_and_last_frame":
-            input_payload["last_frame_url"] = image_urls[1]
+            input_payload = {
+                "prompt": prompt,
+                "negative_prompt": video_negative_prompt,
+                "video_url": source_video_url,
+                "reference_image": image_urls[0],
+                "resolution": video_resolution,
+                "aspect_ratio": video_aspect_ratio,
+                "duration": video_duration,
+                "audio_setting": "auto",
+                "prompt_extend": video_prompt_extend,
+                "watermark": False,
+                "seed": seed,
+            }
+            model = self.MODEL_WAN_VIDEO_EDIT
+
+        elif video_mode == "reference_to_video":
+            if not source_video_url:
+                raise ValueError("reference_to_video requires a connected source_video input.")
+            if not image_urls:
+                raise ValueError("reference_to_video requires at least one reference image.")
+            if video_duration not in {5, 10}:
+                raise ValueError("reference_to_video supports 5 or 10 second durations.")
+
+            input_payload = {
+                "prompt": prompt,
+                "negative_prompt": video_negative_prompt,
+                "reference_image": image_urls[:4],
+                "reference_video": [source_video_url],
+                "resolution": video_resolution,
+                "aspect_ratio": video_aspect_ratio,
+                "duration": video_duration,
+                "prompt_extend": video_prompt_extend,
+                "watermark": False,
+                "seed": seed,
+            }
+            model = self.MODEL_WAN_REFERENCE_TO_VIDEO
+
+        else:
+            if not image_urls:
+                raise ValueError("Wan 2.7 Image to Video requires at least one input image.")
+            if video_mode == "first_and_last_frame" and len(image_urls) < 2:
+                raise ValueError("first_and_last_frame video mode requires two input images.")
+            if video_duration <= 0:
+                raise ValueError("Wan 2.7 image-to-video duration must be greater than 0.")
+
+            input_payload = {
+                "prompt": prompt,
+                "negative_prompt": video_negative_prompt,
+                "first_frame_url": image_urls[0],
+                "resolution": video_resolution,
+                "duration": video_duration,
+                "prompt_extend": video_prompt_extend,
+                "watermark": False,
+                "seed": seed,
+                "nsfw_checker": False,
+            }
+            if video_mode == "first_and_last_frame":
+                input_payload["last_frame_url"] = image_urls[1]
+            model = self.MODEL_WAN_IMAGE_TO_VIDEO
 
         result = await self._run_kie_task(
             api_key,
-            self.MODEL_WAN_IMAGE_TO_VIDEO,
+            model,
             input_payload,
             self.VIDEO_TASK_TIMEOUT_SECONDS,
         )
@@ -717,6 +909,7 @@ class NxdifyNode:
         video_mode: str,
         video_negative_prompt: str,
         video_resolution: str,
+        video_aspect_ratio: str,
         video_duration: int,
         video_prompt_extend: bool,
         nano_aspect_ratio: str,
@@ -725,6 +918,7 @@ class NxdifyNode:
         body_image: Optional[torch.Tensor] = None,
         breasts_image: Optional[torch.Tensor] = None,
         dynamic_pose_image: Optional[torch.Tensor] = None,
+        source_video: Optional[Any] = None,
     ) -> Tuple[torch.Tensor, str, Any]:
         start = time.time()
         print("[Nxdify] ===== Starting process =====")
@@ -742,11 +936,26 @@ class NxdifyNode:
             raise ValueError(f"Unknown generation_type: {generation_type}")
 
         if generation_type == "video":
-            provided: List[Tuple[str, torch.Tensor, bool]] = [("first_frame", face_image, True)]
-            if video_mode == "first_and_last_frame":
-                if body_image is None:
-                    raise ValueError("first_and_last_frame video mode requires body_image as the last frame.")
-                provided.append(("last_frame", body_image, True))
+            if video_mode == "video_edit":
+                provided = [("reference_image", face_image, True)]
+                if body_image is not None or breasts_image is not None or dynamic_pose_image is not None:
+                    print("[Nxdify] video_edit uses one reference image; extra image inputs are ignored.")
+            elif video_mode == "reference_to_video":
+                provided = [("img1", face_image, True)]
+                optional_images = [
+                    (body_image, True),
+                    (breasts_image, True),
+                    (dynamic_pose_image, False),
+                ]
+                for tens, use_cache in optional_images:
+                    if tens is not None and len(provided) < 4:
+                        provided.append((f"img{len(provided) + 1}", tens, use_cache))
+            else:
+                provided = [("first_frame", face_image, True)]
+                if video_mode == "first_and_last_frame":
+                    if body_image is None:
+                        raise ValueError("first_and_last_frame video mode requires body_image as the last frame.")
+                    provided.append(("last_frame", body_image, True))
         else:
             provided = [("img1", face_image, True)]
             optional_images = [
@@ -773,14 +982,20 @@ class NxdifyNode:
             image_urls.append(url)
             print(f"[Nxdify] Uploaded {label} -> {url[:70]}...")
 
+        source_video_url = None
+        if generation_type == "video" and video_mode in {"video_edit", "reference_to_video"}:
+            source_video_url = await self.upload_video_input_with_retry(source_video, api_key=api_key)
+
         if generation_type == "video":
             video_url = await self.generate_video_url(
                 api_key=api_key,
                 image_urls=image_urls,
+                source_video_url=source_video_url,
                 prompt=prompt,
                 video_mode=video_mode,
                 video_negative_prompt=video_negative_prompt,
                 video_resolution=video_resolution,
+                video_aspect_ratio=video_aspect_ratio,
                 video_duration=video_duration,
                 video_prompt_extend=video_prompt_extend,
                 seed=seed,
@@ -846,6 +1061,7 @@ class NxdifyNode:
         video_mode: str,
         video_negative_prompt: str,
         video_resolution: str,
+        video_aspect_ratio: str,
         video_duration: int,
         video_prompt_extend: bool,
         nano_aspect_ratio: str,
@@ -854,6 +1070,7 @@ class NxdifyNode:
         body_image: Optional[torch.Tensor] = None,
         breasts_image: Optional[torch.Tensor] = None,
         dynamic_pose_image: Optional[torch.Tensor] = None,
+        source_video: Optional[Any] = None,
     ) -> Tuple[torch.Tensor, str, Any]:
         coro = self.process_async(
             face_image=face_image,
@@ -874,6 +1091,7 @@ class NxdifyNode:
             video_mode=video_mode,
             video_negative_prompt=video_negative_prompt,
             video_resolution=video_resolution,
+            video_aspect_ratio=video_aspect_ratio,
             video_duration=video_duration,
             video_prompt_extend=video_prompt_extend,
             nano_aspect_ratio=nano_aspect_ratio,
@@ -882,6 +1100,7 @@ class NxdifyNode:
             body_image=body_image,
             breasts_image=breasts_image,
             dynamic_pose_image=dynamic_pose_image,
+            source_video=source_video,
         )
 
         try:
