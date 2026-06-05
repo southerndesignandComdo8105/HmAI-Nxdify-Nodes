@@ -16,7 +16,7 @@ import aiohttp
 
 class NxdifyNode:
     """
-    ComfyUI node for multi-image edit and Wan video generation using Kie.ai Market APIs.
+    ComfyUI node for multi-image edit using Kie.ai and Wan video generation using RunComfy.
 
     Supports:
       - Seedream 4.5 Edit
@@ -24,9 +24,7 @@ class NxdifyNode:
       - Qwen2 Image Edit
       - Nano Banana Pro
       - Wan 2.7 Image Pro
-      - Wan 2.7 Image to Video
-      - Wan 2.7 Video Edit
-      - Wan 2.7 Reference to Video
+      - RunComfy Wan 2.7 Reference to Video
 
     Uses 1-4 image inputs plus an optional VIDEO input in ComfyUI, but individual endpoints may enforce stricter limits.
     Returns a ComfyUI IMAGE batch (BHWC), video URL string, and VIDEO output for video mode.
@@ -37,15 +35,14 @@ class NxdifyNode:
     CREATE_TASK_URL = f"{KIE_API_BASE}/api/v1/jobs/createTask"
     TASK_STATUS_URL = f"{KIE_API_BASE}/api/v1/jobs/recordInfo"
     FILE_UPLOAD_URL = f"{KIE_UPLOAD_BASE}/api/file-stream-upload"
+    RUNCOMFY_API_BASE = "https://model-api.runcomfy.net"
+    RUNCOMFY_VIDEO_MODEL_ID = "wan-ai/wan-2.7/reference-to-video"
 
     MODEL_SEEDREAM_45 = "seedream/4.5-edit"
     MODEL_SEEDREAM_5 = "seedream/5-lite-image-to-image"
     MODEL_QWEN2_IMAGE_EDIT = "qwen2/image-edit"
     MODEL_NANO_BANANA_PRO = "nano-banana-pro"
     MODEL_WAN_IMAGE_PRO = "wan/2-7-image-pro"
-    MODEL_WAN_IMAGE_TO_VIDEO = "wan/2-7-image-to-video"
-    MODEL_WAN_VIDEO_EDIT = "wan/2-7-videoedit"
-    MODEL_WAN_REFERENCE_TO_VIDEO = "wan/2-7-r2v"
 
     GENERATION_TYPES = ["image", "video"]
 
@@ -110,13 +107,17 @@ class NxdifyNode:
                 ),
                 "video_resolution": (cls.VIDEO_RESOLUTIONS, {"default": "1080p"}),
                 "video_aspect_ratio": (cls.VIDEO_ASPECT_RATIOS, {"default": "16:9"}),
-                "video_duration": ("INT", {"default": 5, "min": 0, "max": 15, "step": 1}),
+                "video_duration": ("INT", {"default": 5, "min": 2, "max": 10, "step": 1}),
                 "video_prompt_extend": ("BOOLEAN", {"default": True}),
 
                 # Nano Banana Pro
                 "nano_aspect_ratio": (cls.NANO_ASPECT_RATIOS, {"default": "1:1"}),
                 "nano_resolution": (cls.NANO_RESOLUTIONS, {"default": "1K"}),
                 "nano_output_format": (cls.NANO_OUTPUT_FORMATS, {"default": "png"}),
+
+                # RunComfy Wan 2.7 Reference to Video
+                "video_multi_shots": ("BOOLEAN", {"default": False}),
+                "runcomfy_api_key": ("STRING", {"default": "", "password": True}),
             },
             "optional": {
                 "body_image": ("IMAGE",),
@@ -222,8 +223,21 @@ class NxdifyNode:
 
         return key
 
+    def _resolve_runcomfy_api_key(self, runcomfy_api_key: str) -> str:
+        key = (runcomfy_api_key or "").strip()
+        if not key:
+            key = (os.getenv("RUNCOMFY_API_KEY") or os.getenv("RUNCOMFY_API_TOKEN") or "").strip()
+
+        if not key:
+            raise ValueError("RunComfy API key is required for video generation")
+
+        return key
+
     def _auth_headers(self, api_key: str) -> Dict[str, str]:
         return {"Authorization": f"Bearer {api_key}"}
+
+    def _runcomfy_headers(self, api_key: str) -> Dict[str, str]:
+        return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     def _normalize_selector(self, seedream_version: str) -> str:
         version = seedream_version
@@ -511,6 +525,95 @@ class NxdifyNode:
         print(f"[Nxdify] Kie.ai job finished in {time.time() - start:.2f}s")
         return result
 
+    async def _submit_runcomfy_request(self, api_key: str, model_id: str, input_payload: dict) -> dict:
+        headers = self._runcomfy_headers(api_key)
+        timeout = aiohttp.ClientTimeout(total=60)
+        url = f"{self.RUNCOMFY_API_BASE}/v1/models/{model_id}"
+
+        print(f"[Nxdify] Submitting RunComfy request: {model_id}")
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            async with session.post(url, json=input_payload) as resp:
+                payload = await resp.json(content_type=None)
+
+        if "request_id" not in payload:
+            raise ValueError(f"RunComfy request submission failed for {model_id}: {payload}")
+
+        return payload
+
+    async def _poll_runcomfy_request(
+        self,
+        api_key: str,
+        request_id: str,
+        status_url: Optional[str],
+        timeout_seconds: int,
+    ) -> None:
+        headers = self._runcomfy_headers(api_key)
+        timeout = aiohttp.ClientTimeout(total=60)
+        url = status_url or f"{self.RUNCOMFY_API_BASE}/v1/requests/{request_id}/status"
+        start = time.time()
+        delay = 2.0
+
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            while time.time() - start < timeout_seconds:
+                async with session.get(url) as resp:
+                    payload = await resp.json(content_type=None)
+
+                status = (payload.get("status") or "").lower()
+                queue_position = payload.get("queue_position")
+                if queue_position is not None:
+                    print(f"[Nxdify] RunComfy request {request_id}: status={status} queue_position={queue_position}")
+                else:
+                    print(f"[Nxdify] RunComfy request {request_id}: status={status or 'unknown'}")
+
+                if status in {"completed", "succeeded", "success"}:
+                    print(f"[Nxdify] RunComfy request completed in {time.time() - start:.2f}s")
+                    return
+
+                if status in {"failed", "error", "cancelled", "canceled"}:
+                    error_msg = payload.get("error") or payload.get("message") or payload.get("detail") or "unknown error"
+                    raise ValueError(f"RunComfy request failed: {error_msg}")
+
+                await asyncio.sleep(delay)
+                delay = min(delay * 1.25, 10.0)
+
+        raise TimeoutError(f"RunComfy request timed out after {timeout_seconds}s: {request_id}")
+
+    async def _fetch_runcomfy_result(
+        self,
+        api_key: str,
+        request_id: str,
+        result_url: Optional[str],
+    ) -> dict:
+        headers = self._runcomfy_headers(api_key)
+        timeout = aiohttp.ClientTimeout(total=60)
+        url = result_url or f"{self.RUNCOMFY_API_BASE}/v1/requests/{request_id}/result"
+
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            async with session.get(url) as resp:
+                payload = await resp.json(content_type=None)
+
+        status = (payload.get("status") or "").lower()
+        if status in {"failed", "error", "cancelled", "canceled"}:
+            error_msg = payload.get("error") or payload.get("message") or payload.get("detail") or "unknown error"
+            raise ValueError(f"RunComfy result failed: {error_msg}")
+
+        return payload
+
+    async def _run_runcomfy_model(
+        self,
+        api_key: str,
+        model_id: str,
+        input_payload: dict,
+        timeout_seconds: int,
+    ) -> dict:
+        start = time.time()
+        submitted = await self._submit_runcomfy_request(api_key, model_id, input_payload)
+        request_id = submitted["request_id"]
+        await self._poll_runcomfy_request(api_key, request_id, submitted.get("status_url"), timeout_seconds)
+        result = await self._fetch_runcomfy_result(api_key, request_id, submitted.get("result_url"))
+        print(f"[Nxdify] RunComfy job finished in {time.time() - start:.2f}s")
+        return result
+
     def _extract_urls_from_result(self, result: Any) -> List[str]:
         urls: List[str] = []
 
@@ -558,6 +661,42 @@ class NxdifyNode:
                         walk(value[key])
 
                 for nested_key in ("result", "output", "data", "resultJson"):
+                    if nested_key in value:
+                        walk(value[nested_key])
+
+        walk(result)
+        return urls
+
+    def _extract_video_urls_from_result(self, result: Any) -> List[str]:
+        urls: List[str] = []
+
+        def add_url(value: Any) -> None:
+            if isinstance(value, str) and value.startswith(("http://", "https://")) and value not in urls:
+                urls.append(value)
+
+        def walk(value: Any) -> None:
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped.startswith("{") or stripped.startswith("["):
+                    try:
+                        walk(json.loads(stripped))
+                        return
+                    except json.JSONDecodeError:
+                        pass
+                add_url(stripped)
+                return
+
+            if isinstance(value, list):
+                for item in value:
+                    walk(item)
+                return
+
+            if isinstance(value, dict):
+                for key in ("video", "videos", "video_url", "video_urls", "result_video", "result_videos"):
+                    if key in value:
+                        walk(value[key])
+
+                for nested_key in ("output", "result", "data"):
                     if nested_key in value:
                         walk(value[nested_key])
 
@@ -796,7 +935,7 @@ class NxdifyNode:
 
     async def generate_video_url(
         self,
-        api_key: str,
+        runcomfy_api_key: str,
         image_urls: List[str],
         source_video_url: Optional[str],
         prompt: str,
@@ -806,87 +945,66 @@ class NxdifyNode:
         video_aspect_ratio: str,
         video_duration: int,
         video_prompt_extend: bool,
+        video_multi_shots: bool,
         seed: int,
     ) -> str:
+        if video_duration < 2 or video_duration > 10:
+            raise ValueError("RunComfy Wan 2.7 Reference to Video supports durations from 2 to 10 seconds.")
+
         if video_mode == "video_edit":
             if not source_video_url:
                 raise ValueError("video_edit requires a connected source_video input.")
             if not image_urls:
                 raise ValueError("video_edit requires one reference image.")
-            if video_duration < 0:
-                raise ValueError("video_edit duration must be 0 or greater.")
-
-            input_payload = {
-                "prompt": prompt,
-                "negative_prompt": video_negative_prompt,
-                "video_url": source_video_url,
-                "reference_image": image_urls[0],
-                "resolution": video_resolution,
-                "aspect_ratio": video_aspect_ratio,
-                "duration": video_duration,
-                "audio_setting": "auto",
-                "prompt_extend": video_prompt_extend,
-                "watermark": False,
-                "seed": seed,
-            }
-            model = self.MODEL_WAN_VIDEO_EDIT
+            reference_image_urls = image_urls[:1]
+            reference_video_urls = [source_video_url]
 
         elif video_mode == "reference_to_video":
             if not source_video_url:
                 raise ValueError("reference_to_video requires a connected source_video input.")
             if not image_urls:
                 raise ValueError("reference_to_video requires at least one reference image.")
-            if video_duration not in {5, 10}:
-                raise ValueError("reference_to_video supports 5 or 10 second durations.")
-
-            input_payload = {
-                "prompt": prompt,
-                "negative_prompt": video_negative_prompt,
-                "reference_image": image_urls[:4],
-                "reference_video": [source_video_url],
-                "resolution": video_resolution,
-                "aspect_ratio": video_aspect_ratio,
-                "duration": video_duration,
-                "prompt_extend": video_prompt_extend,
-                "watermark": False,
-                "seed": seed,
-            }
-            model = self.MODEL_WAN_REFERENCE_TO_VIDEO
+            reference_image_urls = image_urls[:4]
+            reference_video_urls = [source_video_url]
 
         else:
             if not image_urls:
-                raise ValueError("Wan 2.7 Image to Video requires at least one input image.")
+                raise ValueError("RunComfy Wan 2.7 Reference to Video requires at least one reference image.")
             if video_mode == "first_and_last_frame" and len(image_urls) < 2:
-                raise ValueError("first_and_last_frame video mode requires two input images.")
-            if video_duration <= 0:
-                raise ValueError("Wan 2.7 image-to-video duration must be greater than 0.")
+                raise ValueError("first_and_last_frame video mode requires two reference images.")
+            reference_image_urls = image_urls[:2] if video_mode == "first_and_last_frame" else image_urls[:1]
+            reference_video_urls = []
 
-            input_payload = {
-                "prompt": prompt,
-                "negative_prompt": video_negative_prompt,
-                "first_frame_url": image_urls[0],
-                "resolution": video_resolution,
-                "duration": video_duration,
-                "prompt_extend": video_prompt_extend,
-                "watermark": False,
-                "seed": seed,
-                "nsfw_checker": False,
-            }
-            if video_mode == "first_and_last_frame":
-                input_payload["last_frame_url"] = image_urls[1]
-            model = self.MODEL_WAN_IMAGE_TO_VIDEO
+        if len(reference_image_urls) + len(reference_video_urls) > 5:
+            raise ValueError("RunComfy reference images + reference videos must not exceed 5 total inputs.")
 
-        result = await self._run_kie_task(
-            api_key,
-            model,
+        input_payload = {
+            "prompt": prompt,
+            "reference_image_urls": reference_image_urls,
+            "reference_video_urls": reference_video_urls,
+            "aspect_ratio": video_aspect_ratio,
+            "resolution": video_resolution,
+            "duration": video_duration,
+            "multi_shots": video_multi_shots,
+            "seed": seed,
+        }
+        if video_negative_prompt:
+            input_payload["negative_prompt"] = video_negative_prompt
+
+        if video_prompt_extend:
+            print("[Nxdify] RunComfy reference-to-video does not expose prompt_extend; ignoring video_prompt_extend.")
+
+        result = await self._run_runcomfy_model(
+            runcomfy_api_key,
+            self.RUNCOMFY_VIDEO_MODEL_ID,
             input_payload,
             self.VIDEO_TASK_TIMEOUT_SECONDS,
         )
-        urls = self._extract_urls_from_result(result)
+        urls = self._extract_video_urls_from_result(result) or self._extract_urls_from_result(result)
         if not urls:
-            raise ValueError("No video URL found in Kie.ai result.")
+            raise ValueError("No video URL found in RunComfy result.")
 
-        print(f"[Nxdify] Returning video URL: {urls[0]}")
+        print(f"[Nxdify] Returning RunComfy video URL: {urls[0]}")
         return urls[0]
 
     async def process_async(
@@ -915,6 +1033,8 @@ class NxdifyNode:
         nano_aspect_ratio: str,
         nano_resolution: str,
         nano_output_format: str,
+        video_multi_shots: bool,
+        runcomfy_api_key: str,
         body_image: Optional[torch.Tensor] = None,
         breasts_image: Optional[torch.Tensor] = None,
         dynamic_pose_image: Optional[torch.Tensor] = None,
@@ -931,6 +1051,11 @@ class NxdifyNode:
 
         os.environ["KIE_API_KEY"] = api_key
         print("[Nxdify] Kie.ai key configured")
+
+        runcomfy_key = None
+        if generation_type == "video":
+            runcomfy_key = self._resolve_runcomfy_api_key(runcomfy_api_key)
+            print(f"[Nxdify] RunComfy API key present: {bool(runcomfy_key)} length={len(runcomfy_key)}")
 
         if generation_type not in self.GENERATION_TYPES:
             raise ValueError(f"Unknown generation_type: {generation_type}")
@@ -988,7 +1113,7 @@ class NxdifyNode:
 
         if generation_type == "video":
             video_url = await self.generate_video_url(
-                api_key=api_key,
+                runcomfy_api_key=runcomfy_key,
                 image_urls=image_urls,
                 source_video_url=source_video_url,
                 prompt=prompt,
@@ -998,6 +1123,7 @@ class NxdifyNode:
                 video_aspect_ratio=video_aspect_ratio,
                 video_duration=video_duration,
                 video_prompt_extend=video_prompt_extend,
+                video_multi_shots=video_multi_shots,
                 seed=seed,
             )
             video_path = await self._download_video_to_file(video_url)
@@ -1067,6 +1193,8 @@ class NxdifyNode:
         nano_aspect_ratio: str,
         nano_resolution: str,
         nano_output_format: str,
+        video_multi_shots: bool,
+        runcomfy_api_key: str,
         body_image: Optional[torch.Tensor] = None,
         breasts_image: Optional[torch.Tensor] = None,
         dynamic_pose_image: Optional[torch.Tensor] = None,
@@ -1097,6 +1225,8 @@ class NxdifyNode:
             nano_aspect_ratio=nano_aspect_ratio,
             nano_resolution=nano_resolution,
             nano_output_format=nano_output_format,
+            video_multi_shots=video_multi_shots,
+            runcomfy_api_key=runcomfy_api_key,
             body_image=body_image,
             breasts_image=breasts_image,
             dynamic_pose_image=dynamic_pose_image,

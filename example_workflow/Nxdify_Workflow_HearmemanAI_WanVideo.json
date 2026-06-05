@@ -1,8 +1,8 @@
 {
   "id": "fe08b202-d3ef-4ee9-9b01-75d3f7632f71",
   "revision": 0,
-  "last_node_id": 12,
-  "last_link_id": 11,
+  "last_node_id": 13,
+  "last_link_id": 12,
   "nodes": [
     {
       "id": 4,
@@ -139,7 +139,7 @@
       ],
       "size": [
         520,
-        700
+        760
       ],
       "flags": {},
       "order": 7,
@@ -185,6 +185,14 @@
           "name": "source_video",
           "type": "VIDEO",
           "link": 11
+        },
+        {
+          "name": "runcomfy_api_key",
+          "type": "STRING",
+          "widget": {
+            "name": "runcomfy_api_key"
+          },
+          "link": 12
         }
       ],
       "outputs": [
@@ -234,7 +242,9 @@
         true,
         "1:1",
         "1K",
-        "png"
+        "png",
+        false,
+        ""
       ],
       "color": "#223",
       "bgcolor": "#335"
@@ -474,6 +484,42 @@
       ],
       "color": "#2a363b",
       "bgcolor": "#3f5159"
+    },
+    {
+      "id": 13,
+      "type": "PrimitiveStringMultiline",
+      "pos": [
+        1246.0,
+        247.0
+      ],
+      "size": [
+        354.0,
+        120.0
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": [
+            12
+          ]
+        }
+      ],
+      "title": "RUNCOMFY API KEY",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.5.1",
+        "Node name for S&R": "PrimitiveStringMultiline"
+      },
+      "widgets_values": [
+        "YOUR RUNCOMFY API KEY HERE"
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
     }
   ],
   "links": [
@@ -548,6 +594,14 @@
       1,
       6,
       "VIDEO"
+    ],
+    [
+      12,
+      13,
+      0,
+      1,
+      7,
+      "STRING"
     ]
   ],
   "groups": [
