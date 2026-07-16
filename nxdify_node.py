@@ -60,7 +60,6 @@ class NxdifyNode:
 
     ASPECT_RATIOS = ["1:1", "4:3", "3:4", "16:9", "9:16", "2:3", "3:2", "21:9"]
     SEEDREAM_QUALITIES = ["basic", "high"]
-    SEEDREAM_OUTPUT_FORMATS = ["png", "jpeg"]
     QWEN_OUTPUT_FORMATS = ["png", "jpeg"]
 
     NANO_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9", "auto"]
@@ -89,7 +88,6 @@ class NxdifyNode:
                 # Seedream 4.5 / 5.0 Lite
                 "seedream_aspect_ratio": (cls.ASPECT_RATIOS, {"default": "1:1"}),
                 "seedream_quality": (cls.SEEDREAM_QUALITIES, {"default": "basic"}),
-                "seedream_output_format": (cls.SEEDREAM_OUTPUT_FORMATS, {"default": "png"}),
 
                 # Qwen2 Image Edit
                 "qwen_image_size": (cls.ASPECT_RATIOS, {"default": "16:9"}),
@@ -828,7 +826,6 @@ class NxdifyNode:
         num_images: int,
         seedream_aspect_ratio: str,
         seedream_quality: str,
-        seedream_output_format: str,
         qwen_image_size: str,
         qwen_output_format: str,
         wan_aspect_ratio: str,
@@ -870,7 +867,7 @@ class NxdifyNode:
                 "image_urls": image_urls,
                 "aspect_ratio": seedream_aspect_ratio,
                 "quality": seedream_quality,
-                "output_format": seedream_output_format,
+                "output_format": "png",
                 "nsfw_checker": False,
             }
             input_payloads = [dict(input_payload) for _ in range(num_images)]
@@ -1035,7 +1032,6 @@ class NxdifyNode:
         num_images: int,
         seedream_aspect_ratio: str,
         seedream_quality: str,
-        seedream_output_format: str,
         qwen_image_size: str,
         qwen_output_format: str,
         wan_aspect_ratio: str,
@@ -1158,7 +1154,6 @@ class NxdifyNode:
             num_images=num_images,
             seedream_aspect_ratio=seedream_aspect_ratio,
             seedream_quality=seedream_quality,
-            seedream_output_format=seedream_output_format,
             qwen_image_size=qwen_image_size,
             qwen_output_format=qwen_output_format,
             wan_aspect_ratio=wan_aspect_ratio,
@@ -1197,7 +1192,6 @@ class NxdifyNode:
         num_images: int,
         seedream_aspect_ratio: str,
         seedream_quality: str,
-        seedream_output_format: str,
         qwen_image_size: str,
         qwen_output_format: str,
         wan_aspect_ratio: str,
@@ -1230,7 +1224,6 @@ class NxdifyNode:
             num_images=num_images,
             seedream_aspect_ratio=seedream_aspect_ratio,
             seedream_quality=seedream_quality,
-            seedream_output_format=seedream_output_format,
             qwen_image_size=qwen_image_size,
             qwen_output_format=qwen_output_format,
             wan_aspect_ratio=wan_aspect_ratio,
