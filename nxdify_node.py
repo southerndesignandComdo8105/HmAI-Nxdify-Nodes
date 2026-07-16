@@ -21,6 +21,7 @@ class NxdifyNode:
     Supports:
       - Seedream 4.5 Edit
       - Seedream 5.0 Lite Image to Image
+      - Seedream 5.0 Pro Image to Image
       - Qwen2 Image Edit
       - Nano Banana Pro
       - Wan 2.7 Image Pro
@@ -40,6 +41,7 @@ class NxdifyNode:
 
     MODEL_SEEDREAM_45 = "seedream/4.5-edit"
     MODEL_SEEDREAM_5 = "seedream/5-lite-image-to-image"
+    MODEL_SEEDREAM_5_PRO = "seedream/5-pro-image-to-image"
     MODEL_QWEN2_IMAGE_EDIT = "qwen2/image-edit"
     MODEL_NANO_BANANA_PRO = "nano-banana-pro"
     MODEL_WAN_IMAGE_PRO = "wan/2-7-image-pro"
@@ -49,6 +51,7 @@ class NxdifyNode:
     # Keep old/working selector name for backward compatibility.
     VERSION_OPTIONS = [
         "v5_lite",
+        "v5_pro",
         "v4.5",
         "qwen2_image_edit",
         "nano_banana_pro",
@@ -57,6 +60,7 @@ class NxdifyNode:
 
     ASPECT_RATIOS = ["1:1", "4:3", "3:4", "16:9", "9:16", "2:3", "3:2", "21:9"]
     SEEDREAM_QUALITIES = ["basic", "high"]
+    SEEDREAM_OUTPUT_FORMATS = ["png", "jpeg"]
     QWEN_OUTPUT_FORMATS = ["png", "jpeg"]
 
     NANO_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9", "auto"]
@@ -85,6 +89,7 @@ class NxdifyNode:
                 # Seedream 4.5 / 5.0 Lite
                 "seedream_aspect_ratio": (cls.ASPECT_RATIOS, {"default": "1:1"}),
                 "seedream_quality": (cls.SEEDREAM_QUALITIES, {"default": "basic"}),
+                "seedream_output_format": (cls.SEEDREAM_OUTPUT_FORMATS, {"default": "png"}),
 
                 # Qwen2 Image Edit
                 "qwen_image_size": (cls.ASPECT_RATIOS, {"default": "16:9"}),
@@ -823,6 +828,7 @@ class NxdifyNode:
         num_images: int,
         seedream_aspect_ratio: str,
         seedream_quality: str,
+        seedream_output_format: str,
         qwen_image_size: str,
         qwen_output_format: str,
         wan_aspect_ratio: str,
@@ -857,6 +863,18 @@ class NxdifyNode:
             }
             input_payloads = [dict(input_payload) for _ in range(num_images)]
             urls = await self._run_repeated_image_tasks(api_key, self.MODEL_SEEDREAM_5, input_payloads)
+
+        elif seedream_version == "v5_pro":
+            input_payload = {
+                "prompt": prompt,
+                "image_urls": image_urls,
+                "aspect_ratio": seedream_aspect_ratio,
+                "quality": seedream_quality,
+                "output_format": seedream_output_format,
+                "nsfw_checker": False,
+            }
+            input_payloads = [dict(input_payload) for _ in range(num_images)]
+            urls = await self._run_repeated_image_tasks(api_key, self.MODEL_SEEDREAM_5_PRO, input_payloads)
 
         elif seedream_version == "qwen2_image_edit":
             if not image_urls:
@@ -1017,6 +1035,7 @@ class NxdifyNode:
         num_images: int,
         seedream_aspect_ratio: str,
         seedream_quality: str,
+        seedream_output_format: str,
         qwen_image_size: str,
         qwen_output_format: str,
         wan_aspect_ratio: str,
@@ -1139,6 +1158,7 @@ class NxdifyNode:
             num_images=num_images,
             seedream_aspect_ratio=seedream_aspect_ratio,
             seedream_quality=seedream_quality,
+            seedream_output_format=seedream_output_format,
             qwen_image_size=qwen_image_size,
             qwen_output_format=qwen_output_format,
             wan_aspect_ratio=wan_aspect_ratio,
@@ -1177,6 +1197,7 @@ class NxdifyNode:
         num_images: int,
         seedream_aspect_ratio: str,
         seedream_quality: str,
+        seedream_output_format: str,
         qwen_image_size: str,
         qwen_output_format: str,
         wan_aspect_ratio: str,
@@ -1209,6 +1230,7 @@ class NxdifyNode:
             num_images=num_images,
             seedream_aspect_ratio=seedream_aspect_ratio,
             seedream_quality=seedream_quality,
+            seedream_output_format=seedream_output_format,
             qwen_image_size=qwen_image_size,
             qwen_output_format=qwen_output_format,
             wan_aspect_ratio=wan_aspect_ratio,
