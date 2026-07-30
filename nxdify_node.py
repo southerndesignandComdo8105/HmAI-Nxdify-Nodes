@@ -8,7 +8,7 @@ import concurrent.futures
 import mimetypes
 from typing import Tuple, Dict, List, Optional, Any
 
-from PIL import Image
+from PIL import Image, ImageOps
 import torch
 import numpy as np
 import aiohttp
@@ -734,6 +734,20 @@ class NxdifyNode:
 
         if not pil_images:
             raise ValueError("All generated image downloads failed.")
+
+        sizes = [img.size for img in pil_images]
+        target_size = max(dict.fromkeys(sizes), key=sizes.count)
+        if any(size != target_size for size in sizes):
+            print(
+                f"[Nxdify] Generated image sizes differ: {sizes}. "
+                f"Normalizing batch to {target_size}."
+            )
+            pil_images = [
+                img
+                if img.size == target_size
+                else ImageOps.fit(img, target_size, method=Image.Resampling.LANCZOS)
+                for img in pil_images
+            ]
 
         tensors = [self.pil_to_tensor(img) for img in pil_images]
         return torch.cat(tensors, dim=0)
