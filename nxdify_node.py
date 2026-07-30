@@ -1142,9 +1142,8 @@ class NxdifyNode:
                 seed=seed,
             )
             video_path = await self._download_video_to_file(video_url)
-            video = self._video_from_file(video_path)
             print(f"[Nxdify] ===== Total time: {time.time() - start:.2f}s =====")
-            return face_image, video_url, video
+            return face_image, video_url, video_path
 
         batch = await self.generate_images_batch_tensor(
             api_key=api_key,
@@ -1249,13 +1248,25 @@ class NxdifyNode:
         )
 
         try:
-            asyncio.get_running_loop()
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        if running_loop is not None and running_loop.is_running():
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 result = executor.submit(self._run_coroutine_in_new_loop, coro).result()
-        except RuntimeError:
+        else:
             result = self._run_coroutine_in_new_loop(coro)
 
-        return result
+        image, video_url, video_path = result
+        if video_path is not None:
+            # ComfyUI's video wrapper may run async setup internally, so create it
+            # only after our HTTP event loop has closed and on a clean thread.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                video = executor.submit(self._video_from_file, video_path).result()
+            return image, video_url, video
+
+        return image, video_url, None
 
 
 NODE_CLASS_MAPPINGS = {"NxdifyNode": NxdifyNode}
