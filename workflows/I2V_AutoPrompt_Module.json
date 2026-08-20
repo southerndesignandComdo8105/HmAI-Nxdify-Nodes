@@ -1,0 +1,388 @@
+{
+  "id": "d5815d8a-55ab-4f06-ae97-6198c9f172db",
+  "revision": 0,
+  "last_node_id": 180,
+  "last_link_id": 356,
+  "nodes": [
+    {
+      "id": 132,
+      "type": "PrimitiveFloat",
+      "pos": [
+        -2651.086228347457,
+        4863.870191360208
+      ],
+      "size": [
+        270,
+        70
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": [
+            353
+          ]
+        }
+      ],
+      "title": "Float (duration)",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.30.1",
+        "Node name for S&R": "PrimitiveFloat"
+      },
+      "widgets_values": [
+        5
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 115,
+      "type": "ResolutionSelector",
+      "pos": [
+        -2652.221270972006,
+        4979.261366204261
+      ],
+      "size": [
+        272.85090151491295,
+        127.05421216136529
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "showAdvanced": true,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "width",
+          "type": "INT",
+          "links": [
+            351
+          ]
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "links": [
+            352
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.30.1",
+        "Node name for S&R": "ResolutionSelector"
+      },
+      "widgets_values": [
+        "9:16 (Portrait Widescreen)",
+        0.7,
+        32
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 160,
+      "type": "Display Any (rgthree)",
+      "pos": [
+        -1510,
+        4720
+      ],
+      "size": [
+        500,
+        330
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "dir": 3,
+          "name": "source",
+          "type": "*",
+          "link": 355
+        }
+      ],
+      "outputs": [],
+      "title": "Generated Prompt",
+      "properties": {
+        "cnr_id": "rgthree-comfy",
+        "ver": "6b76ee6f2c5a007710b5a16f97c94330d6ecc871",
+        "Node name for S&R": "Display Any (rgthree)"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 175,
+      "type": "LoadImage",
+      "pos": [
+        -2271.805583502805,
+        4801.832755816379
+      ],
+      "size": [
+        282.798828125,
+        314
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            350
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.30.1",
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "",
+        "image"
+      ]
+    },
+    {
+      "id": 178,
+      "type": "Display Any (rgthree)",
+      "pos": [
+        -1510,
+        5110
+      ],
+      "size": [
+        390,
+        150
+      ],
+      "flags": {},
+      "order": 99,
+      "mode": 0,
+      "inputs": [
+        {
+          "dir": 3,
+          "name": "source",
+          "type": "*",
+          "link": 356
+        }
+      ],
+      "outputs": [],
+      "title": "H3 Frame Length",
+      "properties": {
+        "cnr_id": "rgthree-comfy",
+        "Node name for S&R": "Display Any (rgthree)"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 179,
+      "type": "MiniMaxH3I2VTwoStagePrompt",
+      "pos": [
+        -2320,
+        4520
+      ],
+      "size": [
+        520,
+        700
+      ],
+      "flags": {},
+      "order": 98,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "start_image",
+          "type": "IMAGE",
+          "link": 350
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "link": 351,
+          "widget": {
+            "name": "width"
+          }
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "link": 352,
+          "widget": {
+            "name": "height"
+          }
+        },
+        {
+          "name": "duration",
+          "type": "FLOAT",
+          "link": 353,
+          "widget": {
+            "name": "duration"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "visual_analysis",
+          "type": "STRING",
+          "links": [
+            354
+          ]
+        },
+        {
+          "name": "h3_prompt",
+          "type": "STRING",
+          "links": [
+            355
+          ]
+        },
+        {
+          "name": "length",
+          "type": "INT",
+          "links": [
+            356
+          ]
+        }
+      ],
+      "title": "I2V TWO-STAGE AUTO PROMPT",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3I2VTwoStagePrompt"
+      },
+      "widgets_values": [
+        "auto",
+        "mistralai/mistral-medium-3-5",
+        "deepseek/deepseek-v4-flash",
+        "Describe the subject moving naturally while preserving the starting image.",
+        "integrated_multimodal_description: [Shot 1] Preserve the start image and describe the intended motion.\n\noverall_soundscape: Natural synchronized ambience.\n\nnon_diegetic_music: N/A",
+        "",
+        1280,
+        720,
+        5.0,
+        180
+      ]
+    },
+    {
+      "id": 180,
+      "type": "Display Any (rgthree)",
+      "pos": [
+        -1740,
+        4520
+      ],
+      "size": [
+        360,
+        150
+      ],
+      "flags": {},
+      "order": 99,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 354
+        }
+      ],
+      "outputs": [],
+      "title": "Visual Analysis (Mistral)",
+      "properties": {
+        "Node name for S&R": "Display Any (rgthree)"
+      },
+      "widgets_values": [
+        ""
+      ]
+    }
+  ],
+  "links": [
+    [
+      350,
+      175,
+      0,
+      179,
+      0,
+      "IMAGE"
+    ],
+    [
+      351,
+      115,
+      0,
+      179,
+      1,
+      "INT"
+    ],
+    [
+      352,
+      115,
+      1,
+      179,
+      2,
+      "INT"
+    ],
+    [
+      353,
+      132,
+      0,
+      179,
+      3,
+      "FLOAT"
+    ],
+    [
+      354,
+      179,
+      0,
+      180,
+      0,
+      "STRING"
+    ],
+    [
+      355,
+      179,
+      1,
+      160,
+      0,
+      "STRING"
+    ],
+    [
+      356,
+      179,
+      2,
+      178,
+      0,
+      "INT"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "I2V TWO-STAGE AUTO PROMPT + MANUAL",
+      "bounding": [
+        -2700,
+        4430,
+        1680,
+        1180
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    }
+  ],
+  "definitions": {
+    "subgraphs": []
+  },
+  "config": {},
+  "extra": {
+    "frontendVersion": "1.47.12"
+  },
+  "version": 0.4
+}
